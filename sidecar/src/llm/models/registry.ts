@@ -1,0 +1,52 @@
+// Mutable model registry. Bootstraps from the built-in catalog on module
+// load; user-supplied or plugin-registered models can be inserted later
+// via direct mutation (out of scope for this round).
+
+import type { Api, Model } from "../types";
+import { MODELS } from "./catalog";
+
+const modelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
+
+function bootstrap(): void {
+  for (const [provider, models] of Object.entries(MODELS)) {
+    const inner = new Map<string, Model<Api>>();
+    for (const [id, model] of Object.entries(models as Record<string, Model<Api>>)) {
+      inner.set(id, model);
+    }
+    modelRegistry.set(provider, inner);
+  }
+}
+bootstrap();
+
+export function getModel<TApi extends Api = Api>(provider: string, modelId: string): Model<TApi> {
+  const inner = modelRegistry.get(provider);
+  if (!inner) throw new Error(`Unknown provider: ${provider}`);
+  const model = inner.get(modelId);
+  if (!model) throw new Error(`Unknown model: ${provider}/${modelId}`);
+  return model as Model<TApi>;
+}
+
+export function getProviders(): string[] {
+  return [...modelRegistry.keys()];
+}
+
+export function getModels(provider: string): Model<Api>[] {
+  const inner = modelRegistry.get(provider);
+  if (!inner) return [];
+  return [...inner.values()];
+}
+
+export function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
+  return a.id === b.id && a.provider === b.provider;
+}
+
+/// Internal: register or overwrite a model. Currently unused by AOS
+/// runtime; reserved for user-config-driven model loading.
+export function registerModel(model: Model<Api>): void {
+  let inner = modelRegistry.get(model.provider);
+  if (!inner) {
+    inner = new Map();
+    modelRegistry.set(model.provider, inner);
+  }
+  inner.set(model.id, model);
+}

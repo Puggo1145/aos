@@ -1,0 +1,90 @@
+import Testing
+import Foundation
+@testable import AOSOSSenseKit
+
+@MainActor
+@Suite("SenseStore — single-writer live mirror")
+struct SenseStoreTests {
+
+    private func makeStore() -> SenseStore {
+        SenseStore(
+            permissionsService: PermissionsService(),
+            registry: AdapterRegistry()
+        )
+    }
+
+    @Test("Initial context is .empty")
+    func initialContextEmpty() {
+        let store = makeStore()
+        #expect(store.context == SenseContext.empty)
+        #expect(store.context.app == nil)
+        #expect(store.context.window == nil)
+        #expect(store.context.behaviors.isEmpty)
+        #expect(store.context.visual == nil)
+        #expect(store.context.clipboard == nil)
+        #expect(store.context.permissions.denied.isEmpty)
+    }
+
+    @Test("Frontmost projection updates app/window without disturbing other fields")
+    func frontmostProjection() {
+        let store = makeStore()
+        let app = AppIdentity(
+            bundleId: "com.apple.finder",
+            name: "Finder",
+            pid: 4242,
+            icon: nil
+        )
+        let window = WindowIdentity(title: "Finder", windowId: nil)
+
+        store._applyFrontmostForTesting(app: app, window: window)
+
+        #expect(store.context.app == app)
+        #expect(store.context.window == window)
+        // Other fields preserved.
+        #expect(store.context.behaviors.isEmpty)
+        #expect(store.context.visual == nil)
+        #expect(store.context.clipboard == nil)
+        #expect(store.context.permissions.denied.isEmpty)
+    }
+
+    @Test("Permissions projection updates only the permissions slot")
+    func permissionsProjection() {
+        let store = makeStore()
+        let app = AppIdentity(
+            bundleId: "com.apple.Safari",
+            name: "Safari",
+            pid: 99,
+            icon: nil
+        )
+        let window = WindowIdentity(title: "Safari", windowId: nil)
+        store._applyFrontmostForTesting(app: app, window: window)
+
+        let perms = PermissionState(denied: [.accessibility, .screenRecording])
+        store._applyPermissionsForTesting(perms)
+
+        #expect(store.context.permissions == perms)
+        // Frontmost app/window survived.
+        #expect(store.context.app == app)
+        #expect(store.context.window == window)
+    }
+
+    @Test("Sequential writers don't corrupt state under MainActor isolation")
+    func sequentialWritersConverge() async {
+        let store = makeStore()
+
+        for i in 0..<50 {
+            let app = AppIdentity(
+                bundleId: "com.example.app\(i)",
+                name: "App\(i)",
+                pid: pid_t(i),
+                icon: nil
+            )
+            let window = WindowIdentity(title: "Win\(i)", windowId: nil)
+            store._applyFrontmostForTesting(app: app, window: window)
+        }
+
+        // Final write wins — no torn state.
+        #expect(store.context.app?.bundleId == "com.example.app49")
+        #expect(store.context.window?.title == "Win49")
+    }
+}
