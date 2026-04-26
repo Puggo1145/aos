@@ -61,11 +61,15 @@ struct ComposerCard: View {
             // to the same baseline as typed text on every focus transition;
             // AppKit's NSTextField placeholder shifts ~1pt when the field
             // editor swaps in, which reads as a flicker.
-            if text.isEmpty {
-                Text("What can I do for you?")
-                    .foregroundStyle(.white.opacity(0.35))
-                    .allowsHitTesting(false)
-            }
+            //
+            // Always kept in the layout (opacity-toggled, not `if`-toggled)
+            // so the ZStack's height stays anchored to Text's line height
+            // in both states. If we removed it via `if`, the row would
+            // collapse to NSTextField's slightly shorter intrinsic height
+            // the moment the user types, shrinking the whole notch by ~1pt.
+            Text("What can I do for you?")
+                .foregroundStyle(.white.opacity(text.isEmpty ? 0.35 : 0))
+                .allowsHitTesting(false)
             TextField("", text: $text)
                 .textFieldStyle(.plain)
                 .focused($focused)

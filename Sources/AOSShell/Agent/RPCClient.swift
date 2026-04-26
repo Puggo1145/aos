@@ -56,6 +56,18 @@ public final class RPCClient: @unchecked Sendable {
     private let writeQueue = DispatchQueue(label: "aos.rpc.write")
     private var readerStopped = false
 
+    /// Serial notification dispatcher. Inbound notifications are yielded to
+    /// `notificationContinuation` in arrival order; a single consumer Task
+    /// awaits each handler before pulling the next item.
+    ///
+    /// Why serial: streaming `ui.token` deltas must be applied in arrival
+    /// order. The earlier implementation spawned a `Task.detached` per
+    /// notification, which let two deltas race to the MainActor handler and
+    /// concatenate out of order (e.g. a reply streamed as "Hi", "! How"
+    /// landed in `turns[idx].reply` as "! HowHi"). One consumer = no race.
+    private var notificationContinuation: AsyncStream<@Sendable () async -> Void>.Continuation?
+    private var notificationConsumer: Task<Void, Never>?
+
     private static let maxLineBytes = 2 * 1024 * 1024 // 2MB per protocol spec
 
     public init(inbound: FileHandle, outbound: FileHandle) {
@@ -71,12 +83,26 @@ public final class RPCClient: @unchecked Sendable {
         // thread. This keeps Swift Concurrency's pool free for all the other
         // async work in tests + production.
         readerStopped = false
+
+        // Spin up the serial notification consumer before the reader starts
+        // producing so the first inbound notification has somewhere to land.
+        let (stream, continuation) = AsyncStream<@Sendable () async -> Void>.makeStream()
+        notificationContinuation = continuation
+        notificationConsumer = Task.detached {
+            for await work in stream {
+                await work()
+            }
+        }
+
         let q = DispatchQueue(label: "aos.rpc.reader", qos: .utility)
         q.async { [weak self] in self?.runReaderSync() }
     }
 
     public func stop() {
         readerStopped = true
+        notificationContinuation?.finish()
+        notificationContinuation = nil
+        notificationConsumer = nil
         // Close the inbound handle so the synchronous `read()` in runReader
         // returns EOF and the reader thread exits.
         try? inbound.close()
@@ -305,7 +331,11 @@ public final class RPCClient: @unchecked Sendable {
             let handler = notificationHandlers[method]
             handlersLock.unlock()
             if let handler {
-                Task.detached { await handler(line) }
+                // Hand off to the serial consumer so handlers run in arrival
+                // order. Critical for streaming `ui.token` deltas: detached
+                // tasks would let two deltas race the MainActor and append
+                // out of order.
+                notificationContinuation?.yield { await handler(line) }
             }
             return
         }

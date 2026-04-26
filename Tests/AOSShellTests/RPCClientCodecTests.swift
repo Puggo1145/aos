@@ -78,6 +78,60 @@ struct RPCClientCodecTests {
         #expect(got?.delta == "hello")
     }
 
+    @Test("notifications are delivered to handlers in wire arrival order")
+    func notificationOrderingPreservedAcrossHandlerSuspensions() async throws {
+        // Regression test for the streaming-token race: when each notification
+        // was dispatched into its own `Task.detached`, multiple `ui.token`
+        // deltas raced and the MainActor handler appended them out of order
+        // (e.g. wire "Hi", "! How" landed in the reply as "! HowHi").
+        //
+        // The old implementation passes `notificationDispatch` (one delta in,
+        // one delta out) but fails here as soon as the handler suspends a few
+        // times mid-way: the detached tasks for later deltas leapfrog the
+        // earlier ones during the yields. The current single-consumer
+        // implementation `await`s each handler before pulling the next item,
+        // so order is preserved regardless of internal suspensions.
+        let (client, serverWrite, _) = makeClient()
+        defer { client.stop() }
+
+        let n = 50
+        let collected = Lock<[String]>([])
+        client.registerNotificationHandler(method: RPCMethod.uiToken) { (params: UITokenParams) in
+            // Several explicit yields so the cooperative scheduler has real
+            // chances to interleave concurrent handlers in the broken
+            // implementation. Without these, even detached tasks may finish
+            // before the next notification is parsed and look ordered by luck.
+            for _ in 0..<5 { await Task.yield() }
+            var current = collected.get()
+            current.append(params.delta)
+            collected.set(current)
+        }
+
+        // Fire the notifications back-to-back. Deltas are zero-padded so a
+        // simple lexicographic compare matches the numeric order — easier to
+        // eyeball in failure output than raw integers.
+        for i in 0..<n {
+            let delta = String(format: "%03d", i)
+            let notif = RPCNotification(
+                method: RPCMethod.uiToken,
+                params: UITokenParams(turnId: "T1", delta: delta)
+            )
+            try serverWrite.write(contentsOf: encodeLine(notif))
+        }
+
+        // Poll until all deltas are collected (or fail the test if we time out).
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if collected.get().count == n { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let got = collected.get()
+        #expect(got.count == n)
+        let expected = (0..<n).map { String(format: "%03d", $0) }
+        #expect(got == expected)
+    }
+
     @Test("typed request resolves on matching response id")
     func requestResolvesOnResponse() async throws {
         let (client, serverWrite, serverRead) = makeClient()

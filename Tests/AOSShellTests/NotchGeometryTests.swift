@@ -82,4 +82,123 @@ struct NotchGeometryTests {
         #expect(rect.width == panel.width)
         #expect(rect.midX == narrow.midX)
     }
+
+    // MARK: - Tray size policy
+    //
+    // `notchTraySize` is a wrapper over `makeTraySize`; service reads only
+    // produce the inputs (noticeCount, expanded). These cases lock the
+    // collapsed-vs-expanded clamping so a regression in tray sizing fails
+    // here, not after a 480pt visual surprise in the running app.
+
+    private let trayCollapsed: CGFloat = 42
+    private let trayMax: CGFloat = 240
+    private let trayWidth: CGFloat = 500
+
+    @Test("tray height is zero when there are no notices")
+    func trayHeightZeroWhenEmpty() {
+        let s = NotchViewModel.makeTraySize(
+            width: trayWidth, noticeCount: 0, expanded: false,
+            measuredContentHeight: 999, // ignored
+            collapsedHeight: trayCollapsed, maxHeight: trayMax
+        )
+        #expect(s == CGSize(width: trayWidth, height: 0))
+    }
+
+    @Test("single-notice tray uses measured content height clamped above collapsed floor")
+    func singleNoticeUsesMeasuredHeightWithFloor() {
+        // Floor: even if measurement undershoots (e.g. before the first
+        // layout pass writes `trayContentHeight`), we never paint shorter
+        // than one row's worth — otherwise the drawer pops in.
+        let undershoot = NotchViewModel.makeTraySize(
+            width: trayWidth, noticeCount: 1, expanded: false,
+            measuredContentHeight: 10,
+            collapsedHeight: trayCollapsed, maxHeight: trayMax
+        )
+        #expect(undershoot.height == trayCollapsed)
+        // Natural fit between floor and ceiling passes through.
+        let natural = NotchViewModel.makeTraySize(
+            width: trayWidth, noticeCount: 1, expanded: false,
+            measuredContentHeight: 80,
+            collapsedHeight: trayCollapsed, maxHeight: trayMax
+        )
+        #expect(natural.height == 80)
+    }
+
+    @Test("tray content taller than max is clamped — inner ScrollView takes over")
+    func contentTallerThanMaxIsClamped() {
+        let s = NotchViewModel.makeTraySize(
+            width: trayWidth, noticeCount: 4, expanded: true,
+            measuredContentHeight: 999,
+            collapsedHeight: trayCollapsed, maxHeight: trayMax
+        )
+        #expect(s.height == trayMax)
+    }
+
+    @Test("multi-notice + collapsed pins to the one-row collapsed height")
+    func multiCollapsedPinsToCollapsed() {
+        // Even if the inner VStack measured tall (all rows are still
+        // *in the layout* per the SystemTrayView animation contract),
+        // the collapsed drawer must render exactly one row's worth.
+        let s = NotchViewModel.makeTraySize(
+            width: trayWidth, noticeCount: 3, expanded: false,
+            measuredContentHeight: 200,
+            collapsedHeight: trayCollapsed, maxHeight: trayMax
+        )
+        #expect(s.height == trayCollapsed)
+    }
+
+    @Test("multi-notice + expanded uses measured height, clamped into [collapsed, max]")
+    func multiExpandedUsesMeasured() {
+        let s = NotchViewModel.makeTraySize(
+            width: trayWidth, noticeCount: 3, expanded: true,
+            measuredContentHeight: 130,
+            collapsedHeight: trayCollapsed, maxHeight: trayMax
+        )
+        #expect(s.height == 130)
+    }
+
+    // MARK: - Opened total rect
+
+    @Test("openedTotalRect is centered horizontally and hangs from screen top")
+    func openedTotalRectHangsFromTop() {
+        let total = CGSize(width: 500, height: 320)
+        let rect = NotchViewModel.makeOpenedTotalRect(screenRect: screenRect, totalSize: total)
+        #expect(rect.midX == screenRect.midX)
+        #expect(rect.maxY == screenRect.maxY)
+        #expect(rect.minY == screenRect.maxY - total.height)
+        #expect(rect.size == total)
+    }
+
+    @Test("openedTotalRect grows downward as the tray adds height")
+    func openedTotalRectGrowsDownward() {
+        let mainOnly = CGSize(width: 500, height: 240)
+        let withTray = CGSize(width: 500, height: 240 + 80)
+        let r1 = NotchViewModel.makeOpenedTotalRect(screenRect: screenRect, totalSize: mainOnly)
+        let r2 = NotchViewModel.makeOpenedTotalRect(screenRect: screenRect, totalSize: withTray)
+        #expect(r1.maxY == r2.maxY) // top-aligned to screen
+        #expect(r2.minY < r1.minY)  // bottom edge dropped by tray height
+        #expect(r2.height - r1.height == 80)
+    }
+
+    // MARK: - Visible hit rects
+
+    @Test("opened visible rect extends 18pt past the logical rect on each side")
+    func openedVisibleRectIncludesShoulders() {
+        let logical = CGRect(x: 100, y: 200, width: 500, height: 240)
+        let visible = NotchViewModel.makeOpenedVisibleRect(openedTotalRect: logical)
+        #expect(visible.minX == logical.minX - 18)
+        #expect(visible.maxX == logical.maxX + 18)
+        #expect(visible.minY == logical.minY)
+        #expect(visible.maxY == logical.maxY)
+        #expect(visible.width == logical.width + 36)
+    }
+
+    @Test("closed visible rect extends 6pt past the bar on each side")
+    func closedVisibleRectIncludesShoulders() {
+        let bar = NotchViewModel.makeClosedBarRect(deviceNotchRect: deviceNotchRect)
+        let visible = NotchViewModel.makeClosedVisibleRect(closedBarRect: bar)
+        #expect(visible.minX == bar.minX - 6)
+        #expect(visible.maxX == bar.maxX + 6)
+        #expect(visible.height == bar.height)
+    }
 }

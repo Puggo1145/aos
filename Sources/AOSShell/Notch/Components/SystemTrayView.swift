@@ -74,28 +74,23 @@ struct SystemTrayView: View {
         //   2. Even when the outer Button is enabled, the nested × tap
         //      gets captured by the outer hit area first, so dismiss
         //      never fires.
-        // Splitting them solves both: the row body uses `.onTapGesture`
-        // (only attached when an action exists), the × is its own plain
-        // Button with full opacity.
+        // Splitting them solves both. The actionable row body is a real
+        // `Button` (not `.onTapGesture`) so VoiceOver, Voice Control, and
+        // keyboard activation all work; action-less rows render as plain
+        // text with no hit region. The × is its own plain Button.
         return HStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: style.icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(style.tint)
-                    .frame(width: 14, alignment: .center)
-                Text(notice.message)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                if let title = style.actionTitle {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.7))
+            if let action = style.action {
+                Button {
+                    action(viewModel)
+                } label: {
+                    rowContent(notice: notice, style: style)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(rowAccessibilityLabel(notice: notice, style: style)))
+            } else {
+                rowContent(notice: notice, style: style)
+                    .accessibilityElement(children: .combine)
             }
-            .contentShape(Rectangle())
-            .modifier(TapAction(action: style.action.map { fn in { fn(viewModel) } }))
 
             Button {
                 viewModel.dismissNotice(notice.kind)
@@ -109,6 +104,37 @@ struct SystemTrayView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss notice")
         }
+    }
+
+    /// Visual content of a notice row, shared between the actionable
+    /// (Button-wrapped) and inert paths so both render identically.
+    private func rowContent(notice: SystemNotice, style: NoticeStyle) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: style.icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(style.tint)
+                .frame(width: 14, alignment: .center)
+            Text(notice.message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            if let title = style.actionTitle {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// VoiceOver label: "<message>, <action>" so the user hears both the
+    /// problem and the activation outcome before deciding to press.
+    private func rowAccessibilityLabel(notice: SystemNotice, style: NoticeStyle) -> String {
+        if let title = style.actionTitle {
+            return "\(notice.message), \(title)"
+        }
+        return notice.message
     }
 
     private var chevronButton: some View {
@@ -157,23 +183,6 @@ private struct NoticeStyle {
                 actionTitle: nil,
                 action: nil
             )
-        }
-    }
-}
-
-// MARK: - Tap helper
-//
-// Conditional tap gesture — only attaches when an action is provided so
-// action-less notices (configCorruption) don't have a phantom hit region
-// and don't pull the disabled-look tint that a `.disabled` Button would
-// inflict on everything underneath it.
-private struct TapAction: ViewModifier {
-    let action: (() -> Void)?
-    func body(content: Content) -> some View {
-        if let action {
-            content.onTapGesture(perform: action)
-        } else {
-            content
         }
     }
 }

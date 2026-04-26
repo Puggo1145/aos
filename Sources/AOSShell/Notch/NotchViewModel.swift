@@ -144,15 +144,14 @@ public final class NotchViewModel {
     ///     clipped by the parent frame for a clean "drawer extending"
     ///     animation rather than a fade.
     public var notchTraySize: CGSize {
-        guard hasTrayNotices else {
-            return CGSize(width: notchOpenedWidth, height: 0)
-        }
-        if trayNotices.count == 1 || trayExpanded {
-            let h = min(max(trayContentHeight, notchTrayCollapsedHeight),
-                        notchTrayMaxHeight)
-            return CGSize(width: notchOpenedWidth, height: h)
-        }
-        return CGSize(width: notchOpenedWidth, height: notchTrayCollapsedHeight)
+        Self.makeTraySize(
+            width: notchOpenedWidth,
+            noticeCount: trayNotices.count,
+            expanded: trayExpanded,
+            measuredContentHeight: trayContentHeight,
+            collapsedHeight: notchTrayCollapsedHeight,
+            maxHeight: notchTrayMaxHeight
+        )
     }
 
     /// Combined bounding box of main panel + tray. Drives the window strip
@@ -164,13 +163,7 @@ public final class NotchViewModel {
     }
 
     public var notchOpenedTotalRect: CGRect {
-        let total = notchOpenedTotalSize
-        return CGRect(
-            x: screenRect.midX - total.width / 2,
-            y: screenRect.maxY - total.height,
-            width: total.width,
-            height: total.height
-        )
+        Self.makeOpenedTotalRect(screenRect: screenRect, totalSize: notchOpenedTotalSize)
     }
 
     /// Composes the localised permission-missing message used by the tray.
@@ -304,9 +297,9 @@ public final class NotchViewModel {
         // Keep these in sync with `NotchShape.shoulderRadius`.
         switch status {
         case .opened:
-            return notchOpenedTotalRect.insetBy(dx: -18, dy: 0)
+            return Self.makeOpenedVisibleRect(openedTotalRect: notchOpenedTotalRect)
         case .closed, .popping:
-            return closedBarRect.insetBy(dx: -6, dy: 0)
+            return Self.makeClosedVisibleRect(closedBarRect: closedBarRect)
         }
     }
 
@@ -330,6 +323,66 @@ public final class NotchViewModel {
             width: panel.width,
             height: deviceNotchHeight
         )
+    }
+
+    /// Tray drawer height policy. Pure: depends only on notice count, the
+    /// expanded flag, the measured content height, and the tray's collapsed/max
+    /// constants — no service reads. Used by `notchTraySize` and exercised
+    /// directly in tests.
+    ///   • Zero notices → height 0 (drawer absent).
+    ///   • Single notice OR expanded → measured content, clamped into
+    ///     [collapsedHeight, maxHeight].
+    ///   • Multi-notice + collapsed → fixed collapsedHeight (one row's worth);
+    ///     the additional rows are still in the layout and clipped by the
+    ///     parent's frame for a clean drawer-extending animation.
+    public nonisolated static func makeTraySize(
+        width: CGFloat,
+        noticeCount: Int,
+        expanded: Bool,
+        measuredContentHeight: CGFloat,
+        collapsedHeight: CGFloat,
+        maxHeight: CGFloat
+    ) -> CGSize {
+        guard noticeCount > 0 else {
+            return CGSize(width: width, height: 0)
+        }
+        if noticeCount == 1 || expanded {
+            let h = min(max(measuredContentHeight, collapsedHeight), maxHeight)
+            return CGSize(width: width, height: h)
+        }
+        return CGSize(width: width, height: collapsedHeight)
+    }
+
+    /// Combined main+tray rect, top-aligned to `screenRect.maxY` and centered
+    /// horizontally. Drives the window strip height and the click-through hot
+    /// rect when opened.
+    public nonisolated static func makeOpenedTotalRect(
+        screenRect: CGRect,
+        totalSize: CGSize
+    ) -> CGRect {
+        CGRect(
+            x: screenRect.midX - totalSize.width / 2,
+            y: screenRect.maxY - totalSize.height,
+            width: totalSize.width,
+            height: totalSize.height
+        )
+    }
+
+    /// Shoulder radius the painted silhouette extends past the logical rect on
+    /// each side. The hit rect must match the rendered bounding box, otherwise
+    /// clicks landing on visible shoulder pixels fall outside the window's
+    /// non-mouse-transparent area and pass through to the app below. The
+    /// values must stay in sync with `NotchShape.shoulderRadius` (opened) and
+    /// the closed-bar shoulder used by the closed-state silhouette.
+    public nonisolated static let openedShoulderRadius: CGFloat = 18
+    public nonisolated static let closedShoulderRadius: CGFloat = 6
+
+    public nonisolated static func makeOpenedVisibleRect(openedTotalRect: CGRect) -> CGRect {
+        openedTotalRect.insetBy(dx: -openedShoulderRadius, dy: 0)
+    }
+
+    public nonisolated static func makeClosedVisibleRect(closedBarRect: CGRect) -> CGRect {
+        closedBarRect.insetBy(dx: -closedShoulderRadius, dy: 0)
     }
 
     public nonisolated static func makeClosedBarRect(deviceNotchRect: CGRect) -> CGRect {
