@@ -125,6 +125,18 @@ public final class SenseStore {
             && !context.permissions.denied.contains(.screenRecording)
     }
 
+    /// Re-read the prior frontmost app's focused element on demand. Called
+    /// by the Shell when the Notch opens so the user sees their just-made
+    /// selection immediately, without waiting for the source app to fire a
+    /// `kAXSelectedTextChangedNotification` — terminals (Ghostty), Electron,
+    /// and other custom-rendered apps either don't emit it or only emit it
+    /// after subsequent focus shifts. The probe stays attached to the prior
+    /// real app via `WindowMirror`'s self-activation suppression, so we just
+    /// need to tell it to look again.
+    public func refreshGeneralProbe() {
+        generalProbe?.refresh()
+    }
+
     /// Capture a single fresh window screenshot for the current frontmost app.
     /// Bypasses the AX behaviors gate — the caller decides whether to use it
     /// (typically: only when `behaviors` is empty, but we don't enforce that

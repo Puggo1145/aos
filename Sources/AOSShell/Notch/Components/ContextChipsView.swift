@@ -122,27 +122,44 @@ struct ContextChipsView: View {
                 deselectedBehaviorKeys.remove(key)
             }
         } label: {
-            Text(envelope.displaySummary)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(selected ? 0.9 : 0.45))
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(selected ? 0.12 : 0.04))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(
-                            Color.white.opacity(selected ? 0 : 0.18),
-                            lineWidth: 1
-                        )
-                )
+            HStack(spacing: 4) {
+                Image(systemName: behaviorIcon(for: envelope.kind))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(selected ? 0.9 : 0.45))
+                Text(envelope.displaySummary)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(selected ? 0.9 : 0.45))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(selected ? 0.12 : 0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        Color.white.opacity(selected ? 0 : 0.18),
+                        lineWidth: 1
+                    )
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(envelope.displaySummary))
         .accessibilityValue(Text(selected ? "selected" : "deselected"))
+    }
+
+    /// Pick an SF Symbol per behavior kind. The chip surfaces the *kind* of
+    /// signal (selection, input field, list selection, …); the actual content
+    /// rides in the envelope payload and is the LLM's to read.
+    private func behaviorIcon(for kind: String) -> String {
+        switch kind {
+        case "general.selectedText": return "text.quote"
+        case "general.currentInput": return "keyboard"
+        case "general.selectedItems": return "checklist"
+        default: return "sparkles"
+        }
     }
 
 }

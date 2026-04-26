@@ -152,4 +152,40 @@ struct AgentServiceTests {
         #expect(s.status == .idle)
         #expect(s.turns.isEmpty)
     }
+
+    @Test("payload-too-large message names both the actual size and the limit")
+    func payloadTooLargeMessageShape() {
+        let msg = AgentService.formatPayloadTooLargeMessage(
+            bytes: 3 * 1024 * 1024,
+            limit: 2 * 1024 * 1024
+        )
+        // Surfaces both numbers so the user knows how far over the cap they
+        // are and what the cap is — vague "too large" copy would force them
+        // to guess how much to remove.
+        #expect(msg.contains("3.00"))
+        #expect(msg.contains("2 MiB"))
+    }
+
+    @Test("submit with oversize payload sets lastErrorMessage and surfaces .error")
+    func submitOversizeSurfacesUserMessage() async {
+        let s = makeService()
+        // 3 MiB prompt forces the outbound size guard in RPCClient.request
+        // to throw before any byte hits the pipe — exercises the full
+        // submit catch path end-to-end (no synthetic error injection).
+        let huge = String(repeating: "x", count: 3 * 1024 * 1024)
+        await s.submit(prompt: huge, citedContext: CitedContext())
+        #expect(s.status == .error)
+        #expect(s.lastErrorMessage != nil)
+        #expect(s.turns.isEmpty)  // no synthetic turn invented
+    }
+
+    @Test("conversation.reset clears lastErrorMessage so the banner disappears")
+    func resetClearsLastErrorMessage() async {
+        let s = makeService()
+        let huge = String(repeating: "x", count: 3 * 1024 * 1024)
+        await s.submit(prompt: huge, citedContext: CitedContext())
+        #expect(s.lastErrorMessage != nil)
+        s.handleConversationReset()
+        #expect(s.lastErrorMessage == nil)
+    }
 }

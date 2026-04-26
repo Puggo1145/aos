@@ -32,6 +32,11 @@ public enum RPCClientError: Error, Sendable {
     case server(RPCError)
     /// Reader hit an oversized line (single NDJSON line > 2MB) and aborted.
     case payloadTooLarge
+    /// Outbound encoded frame would exceed the 2MB single-line cap and was
+    /// rejected at `request(...)` before any pending continuation was
+    /// registered or any byte was written. Carries the encoded byte count and
+    /// the limit so callers can surface a precise user-facing message.
+    case outboundPayloadTooLarge(method: String, bytes: Int, limit: Int)
     /// Initial handshake produced a non-decodable result.
     case malformed(String)
 }
@@ -160,6 +165,20 @@ public final class RPCClient: @unchecked Sendable {
         let id = RPCId.string(UUID().uuidString)
         let envelope = RPCRequest(id: id, method: method, params: params)
         let line = try Self.encodeLine(envelope)
+
+        // Outbound size guard against the sidecar's MAX_LINE_BYTES cap (see
+        // sidecar/src/rpc/transport.ts). The sidecar treats any inbound line
+        // > 2 MiB as fatal and closes the channel, which would crash the
+        // agent loop mid-conversation. Reject *before* registering pending
+        // or writing any bytes so the caller gets a clean typed error and
+        // the transport stays healthy.
+        if line.count > Self.maxLineBytes {
+            throw RPCClientError.outboundPayloadTooLarge(
+                method: method,
+                bytes: line.count,
+                limit: Self.maxLineBytes
+            )
+        }
 
         let resolvedTimeout = timeout ?? Self.timeout(forMethod: method)
 

@@ -27,11 +27,6 @@ import ApplicationServices
 
 @MainActor
 public final class GeneralProbe {
-    /// 2KB textual ceiling per design "截断". Stored as a count of UTF-16 /
-    /// String length units — Swift `String.count` is grapheme clusters,
-    /// which we use here for stable user-visible truncation.
-    public static let textTruncationLimit: Int = 2048
-
     private let hub: AXObserverHub
     private let onChange: @MainActor ([BehaviorEnvelope]) -> Void
 
@@ -73,6 +68,16 @@ public final class GeneralProbe {
         // Read initial focus immediately so the chip row populates without
         // waiting for the first focus change.
         refocus()
+    }
+
+    /// Force an immediate re-read of the focused element. Use this when an
+    /// external trigger (e.g. the Notch opening) needs the latest selection
+    /// snapshot without waiting for the source app to fire an AX notification
+    /// — many apps (terminals with custom Metal views, Electron, Figma)
+    /// either don't emit `kAXSelectedTextChangedNotification` at all or emit
+    /// it only after focus shifts, so passive subscription is unreliable.
+    public func refresh() {
+        recompute()
     }
 
     public func detach() {
@@ -293,24 +298,24 @@ public final class GeneralProbe {
     // selected text mutates. Bumping pid (app switch) replaces the slot.
 
     internal nonisolated static func makeSelectedTextEnvelope(text: String, pid: pid_t) -> BehaviorEnvelope {
-        let truncated = truncate(text)
-        let summary = displaySummary(forText: truncated)
-        return BehaviorEnvelope(
+        // Chip surface is fixed (icon + "Selected text"): the user's signal is
+        // *that* something is selected, not the prefix of it. The full text
+        // travels in payload.content for the LLM. Same rationale as the paste
+        // chip — see docs/designs/os-sense.md §"Clipboard capture".
+        BehaviorEnvelope(
             kind: "general.selectedText",
             citationKey: "general.selectedText:\(pid)",
-            displaySummary: summary,
-            payload: .object(["content": .string(truncated)])
+            displaySummary: "Selected text",
+            payload: .object(["content": .string(PayloadSizeGuard.clamp(text))])
         )
     }
 
     internal nonisolated static func makeCurrentInputEnvelope(value: String, pid: pid_t) -> BehaviorEnvelope {
-        let truncated = truncate(value)
-        let summary = displaySummary(forText: truncated)
-        return BehaviorEnvelope(
+        BehaviorEnvelope(
             kind: "general.currentInput",
             citationKey: "general.currentInput:\(pid)",
-            displaySummary: summary,
-            payload: .object(["value": .string(truncated)])
+            displaySummary: "Current input",
+            payload: .object(["value": .string(PayloadSizeGuard.clamp(value))])
         )
     }
 
@@ -339,25 +344,4 @@ public final class GeneralProbe {
         )
     }
 
-    /// Per design "截断": values longer than 2KB are truncated with a suffix
-    /// noting how many characters were dropped. Public for tests + call sites
-    /// inside adapters that want to share the rule.
-    public nonisolated static func truncate(_ s: String) -> String {
-        let count = s.count
-        if count <= textTruncationLimit { return s }
-        let prefix = String(s.prefix(textTruncationLimit))
-        let dropped = count - textTruncationLimit
-        return "\(prefix)[truncated, \(dropped) more chars]"
-    }
-
-    /// Compress a (potentially still long) snippet into a single-line chip
-    /// summary: collapse newlines / runs of whitespace and cap at 80 chars.
-    private nonisolated static func displaySummary(forText text: String) -> String {
-        let collapsed = text
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        if collapsed.count <= 80 { return collapsed }
-        return String(collapsed.prefix(80)) + "…"
-    }
 }

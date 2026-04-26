@@ -5,22 +5,6 @@ import Foundation
 @Suite("GeneralProbe — pure helpers")
 struct GeneralProbeTests {
 
-    @Test("Truncation passes through under-2KB strings unchanged")
-    func truncateNoop() {
-        let s = String(repeating: "a", count: 100)
-        #expect(GeneralProbe.truncate(s) == s)
-    }
-
-    @Test("Truncation appends suffix with dropped character count")
-    func truncateAppendsSuffix() {
-        let limit = GeneralProbe.textTruncationLimit
-        let s = String(repeating: "x", count: limit + 137)
-        let result = GeneralProbe.truncate(s)
-        #expect(result.hasSuffix("[truncated, 137 more chars]"))
-        // The kept body is the configured limit length.
-        #expect(result.count == limit + "[truncated, 137 more chars]".count)
-    }
-
     @Test("selectedText envelope has stable per-pid citationKey")
     func selectedTextStableKey() {
         let env1 = GeneralProbe.makeSelectedTextEnvelope(text: "first", pid: 42)
@@ -57,14 +41,23 @@ struct GeneralProbeTests {
         #expect(multi.displaySummary == "3 items")
     }
 
-    @Test("selectedText payload carries the truncated content")
+    @Test("selectedText payload carries the full content (no truncation)")
     func selectedTextPayloadShape() {
-        let env = GeneralProbe.makeSelectedTextEnvelope(text: "hello world", pid: 1)
+        let raw = String(repeating: "x", count: 64 * 1024)
+        let env = GeneralProbe.makeSelectedTextEnvelope(text: raw, pid: 1)
         guard case let .object(obj) = env.payload,
               case let .string(content)? = obj["content"] else {
             Issue.record("expected .object with .string content")
             return
         }
-        #expect(content == "hello world")
+        #expect(content == raw)
+    }
+
+    @Test("selectedText / currentInput chips show fixed labels, not content")
+    func fixedDisplaySummary() {
+        let sel = GeneralProbe.makeSelectedTextEnvelope(text: "anything goes here", pid: 1)
+        let inp = GeneralProbe.makeCurrentInputEnvelope(value: "half-typed text", pid: 1)
+        #expect(sel.displaySummary == "Selected text")
+        #expect(inp.displaySummary == "Current input")
     }
 }

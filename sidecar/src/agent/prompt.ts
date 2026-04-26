@@ -99,7 +99,7 @@ export function formatCitedContext(ctx: CitedContext): string {
 function formatClipboard(clip: CitedClipboardLike, index: number): string {
   switch (clip.kind) {
     case "text":
-      return `<clipboard index="${index}" kind="text">${escapeXmlText(truncate(clip.content, 200))}</clipboard>`;
+      return `<clipboard index="${index}" kind="text">${escapeXmlText(clip.content)}</clipboard>`;
     case "filePaths":
       return `<clipboard index="${index}" kind="filePaths">${escapeXmlText(clip.paths.join("\n"))}</clipboard>`;
     case "image":
@@ -135,7 +135,3 @@ function formatBehavior(b: BehaviorEnvelope): string[] {
   return payloadLine ? [head, payloadLine] : [head];
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max)}…[+${s.length - max} chars]`;
-}

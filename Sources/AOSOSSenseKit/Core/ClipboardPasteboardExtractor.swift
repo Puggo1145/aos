@@ -9,27 +9,28 @@ import AppKit
 // Sense Core. Per `docs/designs/os-sense.md` §"Clipboard capture", the
 // clipboard is no longer treated as live OS state — the Shell composer
 // captures it once at user-paste time. This file is the residual API
-// that survives the migration: pasteboard-priority logic + 2KB text
-// truncation + image-metadata-only rule, exposed as a stateless static.
+// that survives the migration: pasteboard-priority logic + image-
+// metadata-only rule, exposed as a stateless static.
+//
+// Text is captured in full: a manual paste is an explicit user act and
+// the whole content must reach the model. The only exception is the
+// `PayloadSizeGuard` cap (≈ 1 MiB UTF-8) which exists solely to keep the
+// stdio JSON-RPC transport from overflowing its 2 MiB line limit; in that
+// extreme case the truncation is marked explicitly, never silent.
 //
 // Lives in `AOSOSSenseKit` (not the Shell) because the projection rules
-// (priority order, truncation rule, "never the pixels") are part of the
-// OS Sense contract — anyone who wants to materialize a `ClipboardItem`
-// from a pasteboard should obey them.
+// (priority order, "never the pixels") are part of the OS Sense
+// contract — anyone who wants to materialize a `ClipboardItem` from a
+// pasteboard should obey them.
 
 public enum ClipboardPasteboardExtractor {
-    /// Maximum text length surfaced into a `ClipboardItem`. Mirrors the
-    /// GeneralProbe rule so paste-captured text and AX-captured text
-    /// share one truncation contract.
-    public static var textTruncationLimit: Int { GeneralProbe.textTruncationLimit }
-
     /// Snapshot the given pasteboard once and project to a
     /// `ClipboardItem`. Returns nil for clipboards we can't represent
     /// (empty, or only types we don't surface).
     ///
     /// Type priority (per design): file URL > UTF-8 plain text > image.
-    /// Images are reported by metadata only; pixel data never leaves
-    /// this function.
+    /// Text is surfaced verbatim. Images are reported by metadata only;
+    /// pixel data never leaves this function.
     public static func extract(from pasteboard: NSPasteboard) -> ClipboardItem? {
         if let urls = pasteboard.readObjects(
             forClasses: [NSURL.self],
@@ -39,7 +40,7 @@ public enum ClipboardPasteboardExtractor {
         }
 
         if let text = pasteboard.string(forType: .string), !text.isEmpty {
-            return .text(GeneralProbe.truncate(text))
+            return .text(PayloadSizeGuard.clamp(text))
         }
 
         if let images = pasteboard.readObjects(

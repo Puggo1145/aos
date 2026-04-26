@@ -4,7 +4,7 @@ import AppKit
 @testable import AOSOSSenseKit
 
 // Pin the projection contract that used to live on `ClipboardWatcher`:
-// type priority, 2KB text truncation, image-metadata-only, empty → nil.
+// type priority, verbatim text capture, image-metadata-only, empty → nil.
 // Each test owns a uniquely-named NSPasteboard so the system pasteboard
 // is never touched and parallel tests don't collide.
 
@@ -34,19 +34,17 @@ struct ClipboardPasteboardExtractorTests {
         #expect(s == "hello clipboard")
     }
 
-    @Test("Text past the 2KB limit is truncated with a suffix")
-    func textTruncated() {
+    @Test("Long text is captured verbatim — manual paste must not be truncated")
+    func longTextCapturedVerbatim() {
         let pb = makePasteboard()
         pb.clearContents()
-        let limit = ClipboardPasteboardExtractor.textTruncationLimit
-        let raw = String(repeating: "x", count: limit + 42)
+        let raw = String(repeating: "x", count: 64 * 1024)
         pb.setString(raw, forType: .string)
         guard case let .text(s) = ClipboardPasteboardExtractor.extract(from: pb) else {
             Issue.record("expected .text projection")
             return
         }
-        #expect(s.hasSuffix("[truncated, 42 more chars]"))
-        #expect(s.count == limit + "[truncated, 42 more chars]".count)
+        #expect(s == raw)
     }
 
     @Test("File URLs win over coexisting plain text")

@@ -411,6 +411,13 @@ public final class NotchViewModel {
         openReason = reason
         status = .opened
         NSApp.activate(ignoringOtherApps: true)
+        // Force a fresh AX read of the prior frontmost app so the user sees
+        // their just-made selection / typed-input chip immediately. Live AX
+        // notifications are unreliable in terminals (Ghostty), Electron, and
+        // other custom-rendered apps — they only fire after subsequent focus
+        // shifts, which is why the chip used to "appear after clicking the
+        // input". Snapshot-on-open removes that dependency.
+        senseStore.refreshGeneralProbe()
         broadcastStatus()
     }
 

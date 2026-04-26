@@ -194,6 +194,53 @@ struct RPCClientCodecTests {
         }
     }
 
+    @Test("outbound request exceeding the 2 MiB line cap is rejected before any byte is written")
+    func outboundOversizeRejected() async throws {
+        let (client, _, serverRead) = makeClient()
+        defer { client.stop() }
+
+        // 3 MiB ASCII prompt — well past the 2 MiB MAX_LINE_BYTES cap that
+        // both the local encoder and the sidecar transport enforce. Pure
+        // ASCII so the encoded JSON length tracks the raw character count
+        // (no surprise expansion that would let a smaller string also
+        // overflow and confuse the assertion).
+        let huge = String(repeating: "x", count: 3 * 1024 * 1024)
+        let params = AgentSubmitParams(
+            turnId: "T1",
+            prompt: huge,
+            citedContext: CitedContext()
+        )
+
+        do {
+            _ = try await client.request(
+                method: RPCMethod.agentSubmit,
+                params: params,
+                as: AgentSubmitResult.self,
+                timeout: 0.2
+            )
+            Issue.record("expected outboundPayloadTooLarge to throw")
+        } catch let RPCClientError.outboundPayloadTooLarge(method, bytes, limit) {
+            #expect(method == RPCMethod.agentSubmit)
+            #expect(bytes > limit)
+            #expect(limit == 2 * 1024 * 1024)
+        } catch {
+            Issue.record("expected outboundPayloadTooLarge, got \(error)")
+        }
+
+        // Nothing should have hit the wire — the guard runs before write().
+        // Poll briefly to make sure no deferred write sneaks in.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let fd = serverRead.fileDescriptor
+        var scratch = [UInt8](repeating: 0, count: 64)
+        let n = scratch.withUnsafeMutableBufferPointer { ptr in
+            read(fd, ptr.baseAddress, ptr.count)
+        }
+        // Non-blocking fd: -1 with EAGAIN means no bytes available, which is
+        // exactly what we want. A positive n would mean the guard leaked
+        // a write past the size check.
+        #expect(n <= 0)
+    }
+
     @Test("majorVersion parses the leading integer")
     func majorVersionParse() {
         #expect(RPCClient.majorVersion("1.2.3") == 1)

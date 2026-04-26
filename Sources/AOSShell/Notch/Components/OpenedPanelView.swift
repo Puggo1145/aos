@@ -143,6 +143,21 @@ struct OpenedPanelView: View {
             if hasSession {
                 history
             }
+            // Submit-time errors that have no per-turn slot (e.g. the
+            // outbound payload exceeded the RPC line cap). Displayed above
+            // the composer so the user sees it before re-submitting.
+            if let msg = agentService.lastErrorMessage, !msg.isEmpty {
+                Text(msg)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.red.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.red.opacity(0.12))
+                    )
+            }
             liveComposer
         }
         .padding(.top, topSafeInset)

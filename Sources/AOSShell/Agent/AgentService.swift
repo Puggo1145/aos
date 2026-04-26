@@ -165,6 +165,12 @@ public final class AgentService {
     public private(set) var turns: [ConversationTurn] = []
     public private(set) var currentTurn: String?
     public private(set) var status: AgentStatus = .idle
+    /// Set when a submit-time failure occurs *before* a turn exists — for
+    /// example an outbound payload that exceeds the RPC line cap. Cleared on
+    /// the next successful submit or `resetSession()`. The Notch panel reads
+    /// this to surface a user-visible banner since there is no per-turn slot
+    /// to attach the message to in this case.
+    public private(set) var lastErrorMessage: String?
 
     private let rpc: RPCClient
     private var doneRevertTask: Task<Void, Never>?
@@ -209,16 +215,36 @@ public final class AgentService {
                 ),
                 as: AgentSubmitResult.self
             )
+            lastErrorMessage = nil
             // ack only — the turn appears in `turns` once the sidecar
             // broadcasts `conversation.turnStarted`.
+        } catch let RPCClientError.outboundPayloadTooLarge(_, bytes, limit) {
+            // The composed prompt + cited context exceeded the NDJSON line
+            // cap. The request was rejected before any byte hit the wire, so
+            // the sidecar transport is unaffected. Surface a precise message
+            // so the user knows to remove pasted content rather than retry
+            // blindly.
+            lastErrorMessage = Self.formatPayloadTooLargeMessage(bytes: bytes, limit: limit)
+            status = .error
+            scheduleErrorRevert()
         } catch {
             // Transport / handler-level failure before the sidecar ever
             // registered the turn. Surface as a global error indicator
             // without inventing a synthetic turn (the sidecar wouldn't
             // know about it, so a turn here would diverge from history).
+            lastErrorMessage = nil
             status = .error
             scheduleErrorRevert()
         }
+    }
+
+    internal static func formatPayloadTooLargeMessage(bytes: Int, limit: Int) -> String {
+        let mib = Double(bytes) / (1024.0 * 1024.0)
+        let limitMib = Double(limit) / (1024.0 * 1024.0)
+        return String(
+            format: "Context payload is %.2f MiB, exceeding the %.0f MiB transport limit. Remove some pasted content or shorten the selected text and try again.",
+            mib, limitMib
+        )
     }
 
     /// Wipe the conversation. Delegates to the sidecar; the resulting
@@ -272,6 +298,7 @@ public final class AgentService {
         currentTurn = nil
         turns = []
         status = .idle
+        lastErrorMessage = nil
         cancelReverts()
     }
 
