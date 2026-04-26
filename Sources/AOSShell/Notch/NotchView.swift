@@ -22,12 +22,20 @@ struct NotchView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Layer 1: silhouette — animates size + corner radius via the
-            // outer .animation modifier.
+            // Layer 1: silhouette. Single Path-based Shape covering the
+            // whole notch outline — shoulders, vertical sides, rounded
+            // bottom. When the tray drawer is up, we just feed a taller
+            // panelSize so the silhouette extends downward as one
+            // geometry; no separate "Layer 0" extension rect, no
+            // compositingGroup-based shoulder overlay. The whole shape
+            // animates as one Path under the same spring.
             NotchShape(
                 status: viewModel.status,
                 deviceNotchRect: viewModel.deviceNotchRect,
-                panelSize: viewModel.notchOpenedSize
+                panelSize: CGSize(
+                    width: viewModel.notchOpenedSize.width,
+                    height: viewModel.notchOpenedSize.height + trayHeight
+                )
             )
 
             // Layer 2: content lives on a fixed, final-size canvas inside
@@ -46,6 +54,22 @@ struct NotchView: View {
                         bottomTrailingRadius: containerCornerRadius
                     )
                 )
+
+            // Layer 2.5: tray content. Same "always-mounted" rule as
+            // Layer 0 — gating on `status == .opened` would make the
+            // entire SystemTrayView insert into the ZStack on each open
+            // transition, producing the same phantom-opacity artefact.
+            // In closed/popping states `trayHeight` is 0, the frame
+            // collapses, and `clipShape(Rectangle())` cuts everything;
+            // the view is mounted but invisible.
+            SystemTrayView(viewModel: viewModel)
+                .frame(
+                    width: shapeWidth,
+                    height: trayHeight,
+                    alignment: .top
+                )
+                .clipShape(Rectangle())
+                .offset(y: shapeHeight)
 
             // Layer 3: edge highlight overlay (closed/popping only). The
             // overlay frame extends below the silhouette so the cursor can
@@ -76,6 +100,21 @@ struct NotchView: View {
         // bottom edge eases down (or back up) instead of snapping.
         .animation(.smooth(duration: 0.32, extraBounce: 0.05),
                    value: viewModel.notchOpenedSize.height)
+        // Tray drawer slides in/out smoothly when notices appear / are
+        // dismissed. Driving on `trayHeight` (a derived CGFloat) keeps the
+        // background-silhouette growth and the content fade on the same
+        // timeline.
+        .animation(.smooth(duration: 0.28),
+                   value: trayHeight)
+        .animation(.smooth(duration: 0.28),
+                   value: viewModel.trayExpanded)
+    }
+
+    /// Tray drawer height. Zero outside the opened state; otherwise
+    /// `notchTraySize.height` already accounts for "no notices" (returns
+    /// 0) and the collapsed/expanded toggle.
+    private var trayHeight: CGFloat {
+        viewModel.status == .opened ? viewModel.notchTraySize.height : 0
     }
 
     /// Closing back to the device notch must not overshoot — a bouncy spring
@@ -171,16 +210,6 @@ struct NotchView: View {
                 await viewModel.configService.markOnboardingCompleted()
             }
         }
-        .overlay(alignment: .top) {
-            if viewModel.configService.recoveredFromCorruption {
-                ConfigCorruptionBanner(
-                    topSafeInset: viewModel.deviceNotchRect.height,
-                    onDismiss: { viewModel.configService.dismissCorruptionNotice() }
-                )
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .animation(.smooth(duration: 0.32), value: viewModel.configService.recoveredFromCorruption)
     }
 
     /// Both onboard prerequisites first satisfied while config has

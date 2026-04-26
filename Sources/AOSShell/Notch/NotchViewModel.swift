@@ -4,6 +4,26 @@ import SwiftUI
 import Combine
 import AOSOSSenseKit
 
+// MARK: - System tray notice model
+//
+// Surfaces in the drawer that pokes out from below the main panel. Each kind
+// is derived from a service signal (permission missing, no provider, config
+// reset). Dismissing is session-scoped — the user can hide a notice for the
+// remainder of the run; the underlying condition still drives onboarding /
+// inline-disabled-input behaviour.
+
+public enum SystemNoticeKind: String, Hashable, Sendable, CaseIterable {
+    case missingPermission
+    case missingProvider
+    case configCorruption
+}
+
+public struct SystemNotice: Identifiable, Equatable, Sendable {
+    public let kind: SystemNoticeKind
+    public let message: String
+    public var id: SystemNoticeKind { kind }
+}
+
 // MARK: - NotchViewModel
 //
 // Owns the Notch UI state machine + derived geometry per docs/designs/notch-ui.md.
@@ -68,6 +88,103 @@ public final class NotchViewModel {
     /// alongside the streamed reply, capped at `notchOpenedMaxHeight`.
     public var historyContentHeight: CGFloat = 0
     public var composerContentHeight: CGFloat = 0
+
+    // MARK: - System tray (drawer) state
+    //
+    // The drawer pokes out from below the main panel when there are pending
+    // notices (permission gaps, missing provider, config-corruption notice).
+    // Dismissals are session-scoped — once the user closes a notice we stop
+    // surfacing it for the rest of the run. The underlying service signal
+    // is still authoritative for routing (onboarding, disabled input).
+
+    public var dismissedNotices: Set<SystemNoticeKind> = []
+    public var trayExpanded: Bool = false
+    public var trayContentHeight: CGFloat = 0
+
+    /// Tray ceiling per design — taller lists scroll. Independent of the
+    /// main panel's 480 budget; the NSWindow strip is sized to the sum.
+    public let notchTrayMaxHeight: CGFloat = 240
+
+    /// Collapsed-mode tray height (one row + container vertical padding).
+    /// Hardcoded — tied to the SystemTrayView styling (11pt text + 6pt
+    /// inner row + 10pt outer top/bottom padding ≈ 42pt).
+    public let notchTrayCollapsedHeight: CGFloat = 42
+
+    /// Active notices, ordered by severity (permission first, since the
+    /// agent literally can't act without OS access).
+    public var trayNotices: [SystemNotice] {
+        var out: [SystemNotice] = []
+        if !permissionsService.allGranted,
+           !dismissedNotices.contains(.missingPermission) {
+            out.append(SystemNotice(kind: .missingPermission, message: missingPermissionMessage))
+        }
+        if !providerService.hasReadyProvider,
+           !dismissedNotices.contains(.missingProvider) {
+            out.append(SystemNotice(kind: .missingProvider, message: "No model configured"))
+        }
+        if configService.recoveredFromCorruption,
+           !dismissedNotices.contains(.configCorruption) {
+            out.append(SystemNotice(
+                kind: .configCorruption,
+                message: "Settings file was corrupt and has been reset."
+            ))
+        }
+        return out
+    }
+
+    public var hasTrayNotices: Bool { !trayNotices.isEmpty }
+
+    /// Tray rect — width matches the main panel.
+    ///   • No notices → height 0 (drawer absent).
+    ///   • One notice OR expanded → measured natural height, clamped into
+    ///     [collapsedHeight, maxHeight]. Beyond maxHeight the inner ScrollView
+    ///     takes over.
+    ///   • Multi-notice + collapsed → hardcoded collapsed height (just the
+    ///     first row); the additional rows are still in the layout but get
+    ///     clipped by the parent frame for a clean "drawer extending"
+    ///     animation rather than a fade.
+    public var notchTraySize: CGSize {
+        guard hasTrayNotices else {
+            return CGSize(width: notchOpenedWidth, height: 0)
+        }
+        if trayNotices.count == 1 || trayExpanded {
+            let h = min(max(trayContentHeight, notchTrayCollapsedHeight),
+                        notchTrayMaxHeight)
+            return CGSize(width: notchOpenedWidth, height: h)
+        }
+        return CGSize(width: notchOpenedWidth, height: notchTrayCollapsedHeight)
+    }
+
+    /// Combined bounding box of main panel + tray. Drives the window strip
+    /// height and the click-through hot rect when opened.
+    public var notchOpenedTotalSize: CGSize {
+        let main = notchOpenedSize
+        let tray = notchTraySize
+        return CGSize(width: main.width, height: main.height + tray.height)
+    }
+
+    public var notchOpenedTotalRect: CGRect {
+        let total = notchOpenedTotalSize
+        return CGRect(
+            x: screenRect.midX - total.width / 2,
+            y: screenRect.maxY - total.height,
+            width: total.width,
+            height: total.height
+        )
+    }
+
+    /// Composes the localised permission-missing message used by the tray.
+    /// Mirrors the previous in-OpenedPanelView helper so the notice text is
+    /// identical to what the inline banner used to render.
+    private var missingPermissionMessage: String {
+        let denied = permissionsService.state.denied
+        if denied.contains(.screenRecording) && denied.contains(.accessibility) {
+            return "Screen Recording & Accessibility disabled"
+        }
+        if denied.contains(.screenRecording) { return "Screen Recording disabled" }
+        if denied.contains(.accessibility)    { return "Accessibility disabled" }
+        return "A required permission is disabled"
+    }
 
     public var notchOpenedSize: CGSize {
         // Settings always needs the full panel — provider/model/effort cards
@@ -179,9 +296,17 @@ public final class NotchViewModel {
     /// (NotchDrop-style or `hitTest`-override style) cannot achieve real
     /// click-through on macOS.
     public var visibleHotRect: CGRect {
+        // `NotchShape` renders the silhouette `2 * shoulderRadius` wider than
+        // the logical panel/bar rect (the shoulders extend horizontally past
+        // `mainMinX/mainMaxX`). The hit rect must match the rendered bounding
+        // box, otherwise clicks landing on the visible shoulder pixels fall
+        // outside `ignoresMouseEvents` and pass through to the app below.
+        // Keep these in sync with `NotchShape.shoulderRadius`.
         switch status {
-        case .opened: return notchOpenedRect
-        case .closed, .popping: return closedBarRect
+        case .opened:
+            return notchOpenedTotalRect.insetBy(dx: -18, dy: 0)
+        case .closed, .popping:
+            return closedBarRect.insetBy(dx: -6, dy: 0)
         }
     }
 
@@ -235,6 +360,28 @@ public final class NotchViewModel {
         guard status == .closed else { return }
         status = .popping
         broadcastStatus()
+    }
+
+    // MARK: - Tray actions
+
+    /// Hide a notice for the rest of the session. Routes to ConfigService
+    /// for the corruption-banner case so its server-side flag is also
+    /// acknowledged.
+    public func dismissNotice(_ kind: SystemNoticeKind) {
+        dismissedNotices.insert(kind)
+        if kind == .configCorruption {
+            configService.dismissCorruptionNotice()
+        }
+        // Collapsing can leave the tray expanded with one item; that's fine —
+        // the next render shrinks it. But if the tray empties out, reset the
+        // expansion so the next time a notice arrives it starts collapsed.
+        if trayNotices.isEmpty {
+            trayExpanded = false
+        }
+    }
+
+    public func toggleTrayExpanded() {
+        trayExpanded.toggle()
     }
 
     /// Cancel all subscriptions; called by the controller during destroy.

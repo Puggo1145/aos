@@ -59,16 +59,99 @@ struct NotchEdgeHighlightShape: Shape {
 }
 
 
+// MARK: - NotchSilhouetteShape
+//
+// Single Path-based silhouette covering the entire notch outline: two
+// inverse-curve shoulders at the top corners, vertical sides, and the
+// rounded bottom. The shape's local rect is the FULL bounding box —
+// including the shoulders' outward extension — so the path's `minX/maxX`
+// are at the far edges of the shoulders and the "main rect" lives at
+// `[minX + shoulderRadius, maxX - shoulderRadius]`.
+//
+// Replaces the previous `Rectangle + clipShape + destinationOut shoulder
+// overlays` approach. That approach used `compositingGroup()` which the
+// renderer caches as a rasterised intermediate; during a springy open
+// animation the shoulder cache could lag the main-rect frame interpolation
+// (visible as the right shoulder briefly detaching), and during macOS
+// Spaces transitions the OS could capture the cached intermediate at a
+// different moment than the surrounding fill (visible as a flat-edged
+// rectangle peeking past the shoulder curve). One Path → no caching →
+// no sub-layer divergence.
+
+struct NotchSilhouetteShape: Shape {
+    /// Bottom corner radius of the silhouette.
+    var cornerRadius: CGFloat
+    /// Inverse-curve shoulder radius. The shape extends `shoulderRadius`
+    /// past the main rect on each horizontal side; `path(in:)` interprets
+    /// the input rect as already including this extension.
+    var shoulderRadius: CGFloat
+
+    /// Expose the radii to SwiftUI's animation system. Without this, the
+    /// default `EmptyAnimatableData` makes corner/shoulder radii snap on
+    /// status changes — `.frame` interpolates the size, but `path(in:)`
+    /// runs once with the new radii, producing the visible "size morphs
+    /// smoothly while the corners jump to the destination value first"
+    /// glitch on open / close.
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(cornerRadius, shoulderRadius) }
+        set {
+            cornerRadius = newValue.first
+            shoulderRadius = newValue.second
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let halfHeight = max(rect.height / 2, 0)
+        let halfMainWidth = max((rect.width - 2 * shoulderRadius) / 2, 0)
+        let r = max(min(cornerRadius, min(halfHeight, halfMainWidth)), 0)
+        let sh = max(min(shoulderRadius, halfHeight), 0)
+        let mainMinX = rect.minX + sh
+        let mainMaxX = rect.maxX - sh
+        let topY = rect.minY
+        let bottomY = rect.maxY
+
+        // Far top-left of the left shoulder (attaches to the menu bar).
+        p.move(to: CGPoint(x: rect.minX, y: topY))
+        // Top edge across the entire silhouette.
+        p.addLine(to: CGPoint(x: rect.maxX, y: topY))
+        // Right shoulder inverse curve into the main rect.
+        p.addQuadCurve(
+            to: CGPoint(x: mainMaxX, y: topY + sh),
+            control: CGPoint(x: mainMaxX, y: topY)
+        )
+        // Down the main rect's right edge.
+        p.addLine(to: CGPoint(x: mainMaxX, y: bottomY - r))
+        // Bottom-right rounded corner.
+        p.addQuadCurve(
+            to: CGPoint(x: mainMaxX - r, y: bottomY),
+            control: CGPoint(x: mainMaxX, y: bottomY)
+        )
+        // Across the bottom edge.
+        p.addLine(to: CGPoint(x: mainMinX + r, y: bottomY))
+        // Bottom-left rounded corner.
+        p.addQuadCurve(
+            to: CGPoint(x: mainMinX, y: bottomY - r),
+            control: CGPoint(x: mainMinX, y: bottomY)
+        )
+        // Up the main rect's left edge.
+        p.addLine(to: CGPoint(x: mainMinX, y: topY + sh))
+        // Left shoulder inverse curve out to the far top-left.
+        p.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: topY),
+            control: CGPoint(x: mainMinX, y: topY)
+        )
+        p.closeSubpath()
+        return p
+    }
+}
+
 // MARK: - NotchShape
 //
-// Implements the rounded-notch silhouette per notch-dev-guide.md §6:
-// a downward-rounded rectangle with two `destinationOut` cutouts at the
-// shoulders to create the inverse-curve transition into the surrounding
-// menu bar.
-//
-// The view derives its size and corner radii from the `status` argument
-// (closed/popping/opened) so SwiftUI's `.animation(_:value:status)` can
-// interpolate between the three layouts in one spring.
+// View wrapper that picks size + radii from the `status` and feeds them to
+// `NotchSilhouetteShape`. SwiftUI's `.animation(_:value:status)` interpolates
+// the underlying CGFloats and the Shape recomputes the path each frame, so
+// the closed → popping → opened transitions read as one continuous jelly.
 
 struct NotchShape: View {
     let status: NotchViewModel.Status
@@ -83,7 +166,7 @@ struct NotchShape: View {
         deviceNotchRect.width + 2 * deviceNotchRect.height
     }
 
-    private var notchSize: CGSize {
+    private var mainSize: CGSize {
         switch status {
         case .closed, .popping:
             // Popping shares the closed footprint: the hover "grow" effect
@@ -113,43 +196,14 @@ struct NotchShape: View {
     }
 
     var body: some View {
-        let r = notchCornerRadius
-        let sh = shoulderRadius
-        let spacing: CGFloat = 0.5
-
-        return Rectangle()
-            .foregroundStyle(.black)
-            .frame(width: notchSize.width, height: notchSize.height)
-            .clipShape(.rect(bottomLeadingRadius: r, bottomTrailingRadius: r))
-            .overlay(alignment: .topLeading) {
-                // Left shoulder: black square + topTrailing-rounded mask
-                ZStack(alignment: .topTrailing) {
-                    Rectangle()
-                        .frame(width: sh, height: sh)
-                        .foregroundStyle(.black)
-                    Rectangle()
-                        .clipShape(.rect(topTrailingRadius: sh))
-                        .foregroundStyle(.white)
-                        .frame(width: sh + spacing, height: sh + spacing)
-                        .blendMode(.destinationOut)
-                }
-                .compositingGroup()
-                .offset(x: -sh - spacing + 0.5, y: -0.5)
-            }
-            .overlay(alignment: .topTrailing) {
-                // Right shoulder mirrors the left.
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .frame(width: sh, height: sh)
-                        .foregroundStyle(.black)
-                    Rectangle()
-                        .clipShape(.rect(topLeadingRadius: sh))
-                        .foregroundStyle(.white)
-                        .frame(width: sh + spacing, height: sh + spacing)
-                        .blendMode(.destinationOut)
-                }
-                .compositingGroup()
-                .offset(x: sh + spacing - 0.5, y: -0.5)
-            }
+        NotchSilhouetteShape(
+            cornerRadius: notchCornerRadius,
+            shoulderRadius: shoulderRadius
+        )
+        .fill(Color.black)
+        .frame(
+            width: mainSize.width + 2 * shoulderRadius,
+            height: mainSize.height
+        )
     }
 }

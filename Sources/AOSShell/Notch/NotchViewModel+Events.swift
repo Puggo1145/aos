@@ -39,15 +39,19 @@ extension NotchViewModel {
                 let hot = self.closedHotRect
                 switch self.status {
                 case .opened:
-                    // Outside panel → close. Re-click on the physical notch
-                    // cutout → close. We intentionally use `deviceNotchRect`
-                    // here rather than the wider `closedHotRect` because the
-                    // top band of the opened panel hosts the header-strip
-                    // buttons (settings, new conversation) right next to the
-                    // cutout; using the closed-bar rect would swallow those
-                    // clicks and dismiss the panel before SwiftUI's button
-                    // handler could fire.
-                    if !self.notchOpenedRect.contains(p) || self.deviceNotchRect.contains(p) {
+                    // Outside the visible silhouette → close. Re-click on
+                    // the physical notch cutout → close. We use
+                    // `notchOpenedTotalRect` (panel + tray) rather than
+                    // just `notchOpenedRect` so clicks landing in the
+                    // system-tray drawer reach SwiftUI buttons (× dismiss,
+                    // chevron expand, "Open Settings") instead of being
+                    // swallowed by this global mouse-down handler and
+                    // triggering an unwanted close. We intentionally use
+                    // `deviceNotchRect` (not the wider `closedHotRect`)
+                    // for the re-click check because the top band of the
+                    // opened panel hosts the header-strip buttons (gear,
+                    // new conversation) right next to the cutout.
+                    if !self.notchOpenedTotalRect.contains(p) || self.deviceNotchRect.contains(p) {
                         self.notchClose()
                     }
                 case .closed, .popping:

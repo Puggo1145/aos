@@ -45,10 +45,11 @@ public final class NotchWindowController {
         viewModel.bindEvents(.shared, agent: agentService)
         self.viewModel = viewModel
 
-        // The NSWindow strip is sized to the silhouette's MAX height — the
-        // dynamically-grown panel never extends past it, so once the
-        // conversation outgrows this budget the history ScrollView scrolls.
-        let panelHeight = viewModel.notchOpenedMaxHeight
+        // The NSWindow strip is sized to the panel's MAX height PLUS the
+        // tray's MAX height — the dynamically-grown panel never extends past
+        // its budget (history ScrollView scrolls past it), and the system
+        // tray drawer that pokes out below adds its own ceiling on top.
+        let panelHeight = viewModel.notchOpenedMaxHeight + viewModel.notchTrayMaxHeight
         let topStrip = Self.makeTopStripRect(screenFrame: screenFrame, panelHeight: panelHeight)
 
         let win = NotchWindow(
