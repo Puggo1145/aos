@@ -38,6 +38,7 @@ struct OpenedPanelView: View {
     let viewModel: NotchViewModel
     let senseStore: SenseStore
     let agentService: AgentService
+    let visualCapturePolicyStore: VisualCapturePolicyStore
 
     /// Top safe area equal to the physical notch height. The opened panel
     /// extends to the very top of the screen, so any content inside the
@@ -159,6 +160,8 @@ struct OpenedPanelView: View {
             senseStore: senseStore,
             agentService: agentService,
             configService: viewModel.configService,
+            policyStore: visualCapturePolicyStore,
+            inputModel: viewModel.composerInputModel,
             inputFocused: Binding(
                 get: { viewModel.inputFocused },
                 set: { viewModel.inputFocused = $0 }
@@ -170,6 +173,13 @@ struct OpenedPanelView: View {
         // a prompt while granting access in Settings.
         .disabled(!viewModel.providerService.hasReadyProvider)
         .opacity(viewModel.providerService.hasReadyProvider ? 1.0 : 0.55)
+        // Pin the composer to its natural vertical size so the parent
+        // VStack's `maxHeight: .infinity` (needed for history) can't
+        // stretch it. Without this, the inner NSTextView would accept
+        // the stretched offer, GeometryReader would report the inflated
+        // height into `composerContentHeight`, and the panel would stay
+        // tall after settings closes.
+        .fixedSize(horizontal: false, vertical: true)
         .background(
             GeometryReader { geo in
                 Color.clear.preference(key: ComposerHeightKey.self, value: geo.size.height)
@@ -231,11 +241,11 @@ struct OpenedPanelView: View {
                         .frame(width: 14, height: 14)
                         .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 2 }
                 }
-                Text(turn.prompt)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                PromptWithChipsView(
+                    prompt: turn.prompt,
+                    clipboardLabels: turn.context.clipboardLabels
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             HStack(alignment: .top, spacing: 8) {
@@ -283,6 +293,7 @@ struct OpenedPanelView: View {
             Text(turnEmoji(turn))
         }
     }
+
 
     private func turnEmoji(_ turn: ConversationTurn) -> String {
         switch turn.status {

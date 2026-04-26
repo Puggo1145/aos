@@ -13,26 +13,31 @@ import AOSOSSenseKit
 // the place that translates between the live model (NSImage / CGImage etc.)
 // and the wire schema (base64 PNG, structured strings).
 //
-// Selection contract (Stage 4): the user can deselect chips before submit.
-// Deselected envelopes are filtered out HERE; they never travel over the
-// wire. App / window are always projected (basic identity).
+// Selection contract: the user can deselect *behavior* chips before
+// submit; deselected envelopes are filtered out HERE so they never travel
+// over the wire. App / window are always projected (basic identity).
+//
+// Clipboard and visual are no longer selection-based:
+//
+// - Clipboard arrives as an explicit `[ClipboardItem]` array — one entry
+//   per paste the user performed into the composer this turn (paste-driven
+//   model per `docs/designs/os-sense.md` §"Clipboard capture"). The
+//   composer accumulates pastes as inline chips so users can stage
+//   multiple snippets within a single prompt.
+// - Visual arrives as an explicit `VisualMirror?` parameter — present iff
+//   the per-app capture toggle is on AND a snapshot was successfully
+//   captured (per design §"ScreenMirror" — capture policy is Shell-side).
+//
+// "Don't include it" in both cases is expressed by passing `nil`. There's
+// no `.visualSelected` / `.clipboardSelected` flag because the call site
+// already decides by deciding whether to capture.
 
 public struct CitedSelection: Sendable {
     /// Behavior `citationKey`s the user has deselected.
     public let deselectedBehaviors: Set<String>
-    /// Whether the user wants the clipboard included.
-    public let clipboardSelected: Bool
-    /// Whether the user wants the visual fallback included.
-    public let visualSelected: Bool
 
-    public init(
-        deselectedBehaviors: Set<String> = [],
-        clipboardSelected: Bool = true,
-        visualSelected: Bool = true
-    ) {
+    public init(deselectedBehaviors: Set<String> = []) {
         self.deselectedBehaviors = deselectedBehaviors
-        self.clipboardSelected = clipboardSelected
-        self.visualSelected = visualSelected
     }
 
     public static let all = CitedSelection()
@@ -47,14 +52,25 @@ enum CitedContextProjection {
     /// 限继续降采样）". Same hard ceiling; one extra pass of 50% downsample.
     static let maxVisualPNGBytes = 400 * 1024
 
-    /// Project the live `SenseContext` onto the wire schema. `visual` is
-    /// passed in by the caller because it isn't a live field on
-    /// `SenseContext` — the Shell captures it on demand at submit time via
-    /// `SenseStore.captureVisualSnapshot()` (see ComposerCard.submit()).
+    /// Project the live `SenseContext` onto the wire schema.
+    ///
+    /// `visual` and `clipboard` are passed in explicitly because neither
+    /// is a live field on `SenseContext`:
+    ///
+    /// - `visual` is captured on demand by the Shell at submit time
+    ///   (`SenseStore.captureVisualSnapshot()`), gated by the per-app
+    ///   capture-policy toggle.
+    /// - `clipboards` is captured at user-paste time inside the composer
+    ///   and held as `pendingPastes` until the next submit. Each paste
+    ///   appends a new entry; the user removes individual entries via the
+    ///   chip's X affordance.
+    ///
+    /// Pass `nil` (visual) or `[]` (clipboards) to omit from the wire payload.
     static func project(
         from sense: SenseContext,
         selection: CitedSelection = .all,
-        visual: VisualMirror? = nil
+        visual: VisualMirror? = nil,
+        clipboards: [ClipboardItem] = []
     ) -> CitedContext {
         let app = sense.app.flatMap { project(app: $0) }
         let window = sense.window.map { project(window: $0) }
@@ -67,22 +83,17 @@ enum CitedContextProjection {
             return kept.map { project(envelope: $0) }
         }()
 
-        let projectedVisual: CitedVisual? = {
-            guard selection.visualSelected, let v = visual else { return nil }
-            return project(visual: v)
-        }()
-
-        let clipboard: CitedClipboard? = {
-            guard selection.clipboardSelected, let item = sense.clipboard else { return nil }
-            return project(clipboard: item)
-        }()
+        let projectedVisual: CitedVisual? = visual.flatMap { project(visual: $0) }
+        let projectedClipboards: [CitedClipboard]? = clipboards.isEmpty
+            ? nil
+            : clipboards.map { project(clipboard: $0) }
 
         return CitedContext(
             app: app,
             window: window,
             behaviors: projectedBehaviors,
             visual: projectedVisual,
-            clipboard: clipboard
+            clipboards: projectedClipboards
         )
     }
 

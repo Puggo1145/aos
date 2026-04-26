@@ -5,9 +5,12 @@ import AppKit
 //
 // Per `docs/designs/os-sense.md` §"核心范式：live state mirror" and §"架构总览".
 // Single owner of `SenseContext`; all writes funneled through @MainActor
-// helpers. Producers (WindowMirror, GeneralProbe, ClipboardWatcher,
-// registered adapters) push field-scoped updates; this class composes them
-// into the canonical context.
+// helpers. Producers (WindowMirror, GeneralProbe, registered adapters) push
+// field-scoped updates; this class composes them into the canonical context.
+//
+// Clipboard is intentionally NOT a live producer: per design §"Clipboard
+// capture" the pasteboard is sampled by the Shell composer at user-paste
+// time. SenseStore therefore has no `clipboard` field and no polling loop.
 //
 // Multi-source `behaviors` slot (§"事件源与字段映射"): GeneralProbe + each
 // adapter contributes a complete envelope set keyed by source id; the store
@@ -46,7 +49,6 @@ public final class SenseStore {
 
     private var windowMirror: WindowMirror?
     private var generalProbe: GeneralProbe?
-    private var clipboardWatcher: ClipboardWatcher?
 
     /// Behaviors contributed per producer. Key "general" is GeneralProbe;
     /// adapters use their `AdapterID`. Empty arrays remove the entry so the
@@ -80,12 +82,6 @@ public final class SenseStore {
         }
         self.generalProbe = probe
 
-        let clipboard = ClipboardWatcher { [weak self] item in
-            self?.applyClipboard(item)
-        }
-        clipboard.start()
-        self.clipboardWatcher = clipboard
-
         let windowMirror = WindowMirror(hub: hub) { [weak self] app, window in
             self?.applyFrontmost(app: app, window: window)
         }
@@ -101,8 +97,6 @@ public final class SenseStore {
     public func stop() {
         windowMirror?.stop()
         windowMirror = nil
-        clipboardWatcher?.stop()
-        clipboardWatcher = nil
         generalProbe?.detach()
         generalProbe = nil
         if let pid = context.app?.pid {
@@ -151,7 +145,6 @@ public final class SenseStore {
             app: app,
             window: window,
             behaviors: context.behaviors,
-            clipboard: context.clipboard,
             permissions: context.permissions
         )
 
@@ -193,7 +186,6 @@ public final class SenseStore {
             app: context.app,
             window: context.window,
             behaviors: merged,
-            clipboard: context.clipboard,
             permissions: context.permissions
         )
     }
@@ -211,23 +203,12 @@ public final class SenseStore {
         return out
     }
 
-    private func applyClipboard(_ item: ClipboardItem?) {
-        context = SenseContext(
-            app: context.app,
-            window: context.window,
-            behaviors: context.behaviors,
-            clipboard: item,
-            permissions: context.permissions
-        )
-    }
-
     private func applyPermissions(_ permissions: PermissionState) {
         let oldDenied = context.permissions.denied
         context = SenseContext(
             app: context.app,
             window: context.window,
             behaviors: context.behaviors,
-            clipboard: context.clipboard,
             permissions: permissions
         )
 
@@ -392,10 +373,6 @@ public final class SenseStore {
 
     internal func _applyBehaviorsForTesting(source: String, envelopes: [BehaviorEnvelope]) {
         applyBehaviors(source: source, envelopes: envelopes)
-    }
-
-    internal func _applyClipboardForTesting(_ item: ClipboardItem?) {
-        applyClipboard(item)
     }
 
     internal var _behaviorsBySourceForTesting: [String: [BehaviorEnvelope]] {

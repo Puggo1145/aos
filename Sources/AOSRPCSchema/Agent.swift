@@ -139,20 +139,23 @@ public struct CitedContext: Codable, Sendable, Equatable {
     public let window: CitedWindow?
     public let behaviors: [BehaviorEnvelope]?
     public let visual: CitedVisual?
-    public let clipboard: CitedClipboard?
+    /// Zero or more clipboard payloads — one per paste the user performed
+    /// into the composer this turn. Order is paste order. Omitted (nil)
+    /// when no pastes occurred; an empty array is invalid.
+    public let clipboards: [CitedClipboard]?
 
     public init(
         app: CitedApp? = nil,
         window: CitedWindow? = nil,
         behaviors: [BehaviorEnvelope]? = nil,
         visual: CitedVisual? = nil,
-        clipboard: CitedClipboard? = nil
+        clipboards: [CitedClipboard]? = nil
     ) {
         self.app = app
         self.window = window
         self.behaviors = behaviors
         self.visual = visual
-        self.clipboard = clipboard
+        self.clipboards = clipboards
     }
 }
 

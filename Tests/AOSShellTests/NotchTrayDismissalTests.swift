@@ -42,6 +42,7 @@ struct NotchTrayDismissalTests {
             providerService: provider,
             configService: config,
             permissionsService: permissions,
+            visualCapturePolicyStore: VisualCapturePolicyStore(),
             screenRect: CGRect(x: 0, y: 0, width: 1440, height: 900),
             deviceNotchRect: CGRect(x: 620, y: 868, width: 200, height: 32)
         )

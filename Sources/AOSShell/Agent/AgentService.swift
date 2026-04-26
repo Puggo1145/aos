@@ -86,11 +86,21 @@ public struct ContextSnapshot {
     public let appName: String?
     public let appIcon: NSImage?
     public let behaviorSummaries: [String]
+    /// Per-clipboard short label, indexed to match `[[clipboard:N]]`
+    /// markers in the prompt. The history row uses these to render an
+    /// inline chip badge in place of the raw marker.
+    public let clipboardLabels: [String]
 
-    public init(appName: String?, appIcon: NSImage?, behaviorSummaries: [String]) {
+    public init(
+        appName: String?,
+        appIcon: NSImage?,
+        behaviorSummaries: [String],
+        clipboardLabels: [String] = []
+    ) {
         self.appName = appName
         self.appIcon = appIcon
         self.behaviorSummaries = behaviorSummaries
+        self.clipboardLabels = clipboardLabels
     }
 
     /// Build from the wire `CitedContext`. Decodes `app.iconPNG` (base64) into
@@ -103,11 +113,27 @@ public struct ContextSnapshot {
         } else {
             icon = nil
         }
+        let clipLabels: [String] = citedContext.clipboards?.map(clipboardLabel(for:)) ?? []
         return ContextSnapshot(
             appName: citedContext.app?.name,
             appIcon: icon,
-            behaviorSummaries: citedContext.behaviors?.map { $0.displaySummary } ?? []
+            behaviorSummaries: citedContext.behaviors?.map { $0.displaySummary } ?? [],
+            clipboardLabels: clipLabels
         )
+    }
+}
+
+/// Mirror of the input-side chip label so the live composer and the
+/// history row read the same. Kept here (not in ChipInputView) because
+/// ContextSnapshot is the wire-decoded shape that drives display.
+private func clipboardLabel(for clip: CitedClipboard) -> String {
+    switch clip {
+    case .text(let s):
+        return "Pasted \(s.count) chars"
+    case .filePaths(let paths):
+        return paths.count == 1 ? "Pasted file" : "Pasted \(paths.count) files"
+    case .image:
+        return "Pasted image"
     }
 }
 

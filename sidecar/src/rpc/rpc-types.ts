@@ -229,7 +229,10 @@ export interface CitedContext {
   window?: CitedWindow;
   behaviors?: BehaviorEnvelope[];
   visual?: CitedVisual;
-  clipboard?: CitedClipboard;
+  /// Zero or more clipboard payloads, one per paste the user performed
+  /// into the composer this turn. Order is paste order. Omitted when
+  /// no pastes occurred; an empty array is invalid.
+  clipboards?: CitedClipboard[];
 }
 
 export interface CitedApp {

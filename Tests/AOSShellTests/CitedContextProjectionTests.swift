@@ -19,14 +19,12 @@ struct CitedContextProjectionTests {
 
     private func ctx(
         app: AppIdentity? = nil,
-        behaviors: [AOSOSSenseKit.BehaviorEnvelope] = [],
-        clipboard: ClipboardItem? = nil
+        behaviors: [AOSOSSenseKit.BehaviorEnvelope] = []
     ) -> SenseContext {
         SenseContext(
             app: app,
             window: app.map { WindowIdentity(title: $0.name, windowId: nil) },
             behaviors: behaviors,
-            clipboard: clipboard,
             permissions: PermissionState(denied: [])
         )
     }
@@ -38,7 +36,7 @@ struct CitedContextProjectionTests {
         #expect(result.window == nil)
         #expect(result.behaviors == nil)
         #expect(result.visual == nil)
-        #expect(result.clipboard == nil)
+        #expect(result.clipboards == nil)
     }
 
     @Test("App + behaviors travel through unchanged with default selection")
@@ -77,34 +75,34 @@ struct CitedContextProjectionTests {
         #expect(result.behaviors == nil)
     }
 
-    @Test("Clipboard de-selection drops it from the wire payload")
-    func clipboardDeselected() {
-        let result = CitedContextProjection.project(
-            from: ctx(clipboard: .text("secret token")),
-            selection: CitedSelection(clipboardSelected: false)
-        )
-        #expect(result.clipboard == nil)
+    @Test("Omitting clipboards (empty array) drops the field from the wire payload")
+    func clipboardOmittedByDefault() {
+        let result = CitedContextProjection.project(from: ctx())
+        #expect(result.clipboards == nil)
     }
 
-    @Test("Clipboard text projection preserves the (already-truncated) content")
+    @Test("Single clipboard text passes through (already-truncated content)")
     func clipboardTextPassthrough() {
         let result = CitedContextProjection.project(
-            from: ctx(clipboard: .text("hello"))
+            from: ctx(),
+            clipboards: [.text("hello")]
         )
-        guard case let .text(s)? = result.clipboard else {
+        guard case let .text(s)? = result.clipboards?.first else {
             Issue.record("expected .text clipboard")
             return
         }
         #expect(s == "hello")
+        #expect(result.clipboards?.count == 1)
     }
 
     @Test("Clipboard filePaths projects to absolute path strings")
     func clipboardFilePaths() {
         let url = URL(fileURLWithPath: "/tmp/x.txt")
         let result = CitedContextProjection.project(
-            from: ctx(clipboard: .filePaths([url]))
+            from: ctx(),
+            clipboards: [.filePaths([url])]
         )
-        guard case let .filePaths(paths)? = result.clipboard else {
+        guard case let .filePaths(paths)? = result.clipboards?.first else {
             Issue.record("expected .filePaths")
             return
         }
@@ -115,15 +113,43 @@ struct CitedContextProjectionTests {
     func clipboardImageMetadataOnly() {
         let metadata = ImageMetadata(width: 800, height: 600, type: "public.png")
         let result = CitedContextProjection.project(
-            from: ctx(clipboard: .image(metadata: metadata))
+            from: ctx(),
+            clipboards: [.image(metadata: metadata)]
         )
-        guard case let .image(meta)? = result.clipboard else {
+        guard case let .image(meta)? = result.clipboards?.first else {
             Issue.record("expected .image")
             return
         }
         #expect(meta.width == 800)
         #expect(meta.height == 600)
         #expect(meta.type == "public.png")
+    }
+
+    @Test("Multiple pastes preserve order in the projected clipboards array")
+    func multipleClipboardsPreserveOrder() {
+        let result = CitedContextProjection.project(
+            from: ctx(),
+            clipboards: [.text("first"), .text("second"), .text("third")]
+        )
+        #expect(result.clipboards?.count == 3)
+        guard case let .text(a)? = result.clipboards?[0],
+              case let .text(b)? = result.clipboards?[1],
+              case let .text(c)? = result.clipboards?[2] else {
+            Issue.record("expected three .text entries in order")
+            return
+        }
+        #expect(a == "first")
+        #expect(b == "second")
+        #expect(c == "third")
+    }
+
+    @Test("Empty clipboards array is normalized to nil on the wire")
+    func emptyClipboardsNormalizesToNil() {
+        let result = CitedContextProjection.project(
+            from: ctx(),
+            clipboards: []
+        )
+        #expect(result.clipboards == nil)
     }
 
     @Test("JSONValue conversion handles every variant")
@@ -210,28 +236,11 @@ struct CitedContextProjectionTests {
         #expect(!CitedContextProjection.fitsBase64Budget(overBudget, limit: limit))
     }
 
-    @Test("Deselected visual is dropped even when a frame was captured")
-    func visualDeselectedDrops() {
-        let ctxRef = CGContext(
-            data: nil,
-            width: 16,
-            height: 16,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )!
-        let img = ctxRef.makeImage()!
-        let visual = VisualMirror(
-            latestFrame: img,
-            frameSize: CGSize(width: 16, height: 16),
-            capturedAt: Date()
-        )
-        let result = CitedContextProjection.project(
-            from: ctx(),
-            selection: CitedSelection(visualSelected: false),
-            visual: visual
-        )
+    @Test("Passing visual=nil omits the visual field — capture is the gate")
+    func visualOmissionViaNil() {
+        // Post-redesign there is no `visualSelected` flag — the caller
+        // expresses "don't include" by simply not capturing (passing nil).
+        let result = CitedContextProjection.project(from: ctx(), visual: nil)
         #expect(result.visual == nil)
     }
 }

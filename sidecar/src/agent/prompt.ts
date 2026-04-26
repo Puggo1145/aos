@@ -26,13 +26,34 @@ export function buildUserMessage(input: {
   startedAt: number;
 }): UserMessage {
   const block = formatCitedContext(input.citedContext);
-  const content = block.length > 0 ? `${block}\n\n${input.prompt}` : input.prompt;
+  // Shell ships clipboard pastes as inline markers (`[[clipboard:N]]`)
+  // inside the prompt — one per chip the user inserted into the rich
+  // input. Expand them here so the LLM sees the chip's content at the
+  // exact position the user placed it. The position carries intent:
+  // "summarize <paste1> using <paste2>" and the swap read differently.
+  const expandedPrompt = expandClipboardMarkers(input.prompt, input.citedContext.clipboards ?? []);
+  const content = block.length > 0 ? `${block}\n\n${expandedPrompt}` : expandedPrompt;
   return {
     role: "user",
     content,
     timestamp: input.startedAt,
   };
 }
+
+/// Substitute every `[[clipboard:N]]` marker in `prompt` with an inline
+/// description of the corresponding entry in `clipboards`. Markers whose
+/// index is out of range are left as-is — that's a Shell↔Sidecar contract
+/// violation worth surfacing to the LLM rather than silently dropping.
+function expandClipboardMarkers(prompt: string, clipboards: CitedClipboardLike[]): string {
+  return prompt.replace(/\[\[clipboard:(\d+)\]\]/g, (match, idxStr) => {
+    const idx = Number.parseInt(idxStr, 10);
+    const clip = clipboards[idx];
+    if (!clip) return match;
+    return formatClipboard(clip, idx + 1);
+  });
+}
+
+type CitedClipboardLike = NonNullable<CitedContext["clipboards"]>[number];
 
 /// Render a `CitedContext` as a plain-text block. Returns `""` when nothing
 /// in the context is populated. Exported so tests can pin its shape without
@@ -47,9 +68,11 @@ export function formatCitedContext(ctx: CitedContext): string {
   if (ctx.window) {
     lines.push(`Window: ${ctx.window.title}`);
   }
-  if (ctx.clipboard) {
-    lines.push(`Clipboard: ${formatClipboard(ctx.clipboard)}`);
-  }
+  // Clipboards are intentionally NOT listed here. Shell ships them as
+  // inline `[[clipboard:N]]` markers inside the prompt, and we expand
+  // those markers to `<clipboard N: …>` at the user's caret position.
+  // Re-listing them in os-context would duplicate the payload AND
+  // strip the position signal the marker carried.
   if (ctx.behaviors && ctx.behaviors.length > 0) {
     lines.push("Behaviors:");
     for (const b of ctx.behaviors) {
@@ -68,15 +91,34 @@ export function formatCitedContext(ctx: CitedContext): string {
   return ["<os-context>", ...lines, "</os-context>"].join("\n");
 }
 
-function formatClipboard(clip: NonNullable<CitedContext["clipboard"]>): string {
+/// Render a single clipboard entry as a closed XML element. The opening
+/// tag carries the chip's 1-based `index` (matches the user's visual
+/// "chip #N") and the payload `kind`; the body holds the content. Keeps
+/// shape symmetric with the surrounding `<os-context>` block so the LLM
+/// has one consistent parse rule.
+function formatClipboard(clip: CitedClipboardLike, index: number): string {
   switch (clip.kind) {
     case "text":
-      return `text "${truncate(clip.content, 200)}"`;
+      return `<clipboard index="${index}" kind="text">${escapeXmlText(truncate(clip.content, 200))}</clipboard>`;
     case "filePaths":
-      return `files [${clip.paths.join(", ")}]`;
+      return `<clipboard index="${index}" kind="filePaths">${escapeXmlText(clip.paths.join("\n"))}</clipboard>`;
     case "image":
-      return `image ${clip.metadata.width}x${clip.metadata.height} ${clip.metadata.type}`;
+      return `<clipboard index="${index}" kind="image" width="${clip.metadata.width}" height="${clip.metadata.height}" type="${escapeXmlAttr(clip.metadata.type)}" />`;
   }
+}
+
+/// Escape characters that would break XML element-body framing. Clipboard
+/// payloads are user-pasted (not adversarial), but a literal `</clipboard>`
+/// or stray `<` would still confuse the LLM's parse of the structure we
+/// promised it. Keep the escape set minimal — just enough to preserve
+/// element boundaries.
+function escapeXmlText(s: string): string {
+  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/// Same as `escapeXmlText` plus `"` because attribute values are quoted.
+function escapeXmlAttr(s: string): string {
+  return escapeXmlText(s).replaceAll('"', "&quot;");
 }
 
 function formatBehavior(b: BehaviorEnvelope): string[] {

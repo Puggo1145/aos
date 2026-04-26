@@ -70,6 +70,12 @@ public struct SelectedItem: Hashable, Sendable {
 }
 
 /// Metadata for an image clipboard item. Per design, **never** the pixels.
+///
+/// `ClipboardItem` is no longer a live `SenseContext` field — the Shell
+/// composer captures it once at user-paste time (see
+/// `docs/designs/os-sense.md` §"Clipboard capture"). This type still
+/// lives here because the wire-side projection and the pasteboard
+/// extractor both belong to OS Sense's projection contract.
 public struct ImageMetadata: Hashable, Sendable {
     public let width: Int
     public let height: Int
@@ -82,7 +88,7 @@ public struct ImageMetadata: Hashable, Sendable {
     }
 }
 
-/// The single most-relevant clipboard item per design priority
+/// One pasted clipboard payload, projected per the design priority
 /// (`public.file-url` > `public.utf8-plain-text` > `public.image`).
 public enum ClipboardItem: Equatable, Sendable {
     case text(String)
@@ -133,29 +139,30 @@ public struct PermissionState: Equatable, Sendable {
 /// (no `NSWorkspace` activation event has fired yet). Once a frontmost app
 /// is observed, `app` is populated and the live-mirror invariant holds.
 ///
-/// The visual fallback is **not** a live field on this struct: capturing a
-/// screen frame is expensive and only ever needed at submit time, so it's
-/// fetched on demand via `SenseStore.captureVisualSnapshot()` rather than
-/// held continuously. UI surfaces a "snapshot will be attached" affordance
-/// based on availability flags (see `SenseStore.visualSnapshotAvailable`).
+/// Two payloads that the chip row also surfaces are deliberately **absent**
+/// here:
+///
+/// - Visual fallback: capturing a screen frame is expensive and only ever
+///   needed at submit time, so it's fetched on demand via
+///   `SenseStore.captureVisualSnapshot()`. The decision of *when* to
+///   capture (e.g. per-app "always capture" toggle) lives in the Shell.
+/// - Clipboard: no longer a live OS mirror — the Shell composer captures
+///   one item at user-paste time and attaches it to the next submit.
 public struct SenseContext: Equatable, Sendable {
     public let app: AppIdentity?
     public let window: WindowIdentity?
     public let behaviors: [BehaviorEnvelope]
-    public let clipboard: ClipboardItem?
     public let permissions: PermissionState
 
     public init(
         app: AppIdentity?,
         window: WindowIdentity?,
         behaviors: [BehaviorEnvelope],
-        clipboard: ClipboardItem?,
         permissions: PermissionState
     ) {
         self.app = app
         self.window = window
         self.behaviors = behaviors
-        self.clipboard = clipboard
         self.permissions = permissions
     }
 
@@ -163,7 +170,6 @@ public struct SenseContext: Equatable, Sendable {
         app: nil,
         window: nil,
         behaviors: [],
-        clipboard: nil,
         permissions: PermissionState(denied: [])
     )
 }

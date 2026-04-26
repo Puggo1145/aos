@@ -223,6 +223,13 @@ public final class NotchViewModel {
     public let providerService: ProviderService
     public let configService: ConfigService
     public let permissionsService: PermissionsService
+    public let visualCapturePolicyStore: VisualCapturePolicyStore
+
+    /// Composer input state. Owned here (not by `ComposerCard`) so the
+    /// rich text + chips survive notch close/reopen cycles — the panel
+    /// view is dropped from the tree when the notch collapses, which
+    /// would otherwise reset every `@State` in the composer.
+    let composerInputModel: ChipInputModel = ChipInputModel()
 
     // Combine cancellables for the event-bridge subscriptions registered in
     // NotchViewModel+Events.swift.
@@ -237,6 +244,7 @@ public final class NotchViewModel {
         providerService: ProviderService,
         configService: ConfigService,
         permissionsService: PermissionsService,
+        visualCapturePolicyStore: VisualCapturePolicyStore,
         screenRect: CGRect,
         deviceNotchRect: CGRect
     ) {
@@ -245,6 +253,7 @@ public final class NotchViewModel {
         self.providerService = providerService
         self.configService = configService
         self.permissionsService = permissionsService
+        self.visualCapturePolicyStore = visualCapturePolicyStore
         self.screenRect = screenRect
         self.deviceNotchRect = deviceNotchRect
         // Per design: -4 if there is a real notch, 0 otherwise — expands the

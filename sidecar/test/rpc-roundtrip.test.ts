@@ -106,7 +106,7 @@ test("agent.submit fixture roundtrips byte-equal", () => {
   expect(req.method).toBe(RPCMethod.agentSubmit);
   expect(req.params.citedContext.app?.bundleId).toBe("com.apple.Safari");
   expect(req.params.citedContext.behaviors?.length).toBe(1);
-  expect(req.params.citedContext.clipboard?.kind).toBe("text");
+  expect(req.params.citedContext.clipboards?.[0]?.kind).toBe("text");
 });
 
 test("agent.cancel fixture roundtrips byte-equal", () => {

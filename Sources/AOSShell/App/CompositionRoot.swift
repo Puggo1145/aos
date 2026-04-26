@@ -24,6 +24,7 @@ public final class CompositionRoot {
     public let permissionsService: PermissionsService
     public let senseStore: SenseStore
     public let adapterRegistry: AdapterRegistry
+    public let visualCapturePolicyStore: VisualCapturePolicyStore
     public let sidecarProcess: SidecarProcess
     public private(set) var rpcClient: RPCClient?
     public private(set) var agentService: AgentService?
@@ -46,6 +47,7 @@ public final class CompositionRoot {
             permissionsService: permissionsService,
             registry: adapterRegistry
         )
+        self.visualCapturePolicyStore = VisualCapturePolicyStore()
         self.sidecarProcess = SidecarProcess()
     }
 
@@ -167,6 +169,7 @@ public final class CompositionRoot {
             providerService: provider,
             configService: config,
             permissionsService: permissionsService,
+            visualCapturePolicyStore: visualCapturePolicyStore,
             screen: screen
         )
     }

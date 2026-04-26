@@ -1,94 +1,97 @@
 import SwiftUI
+import AppKit
 import AOSOSSenseKit
 import AOSRPCSchema
 
 // MARK: - ComposerCard
 //
-// Per notch-ui.md §"输入区" (revised). One bordered rounded card stacking,
+// Per the post-redesign live composer (see `docs/designs/os-sense.md`
+// §"Notch UI 渲染契约" + §"ScreenMirror" + §"Clipboard capture"). Stack,
 // top → bottom:
 //
-//   1. Live context chips (frontmost app + behavior envelopes). Hidden when
-//      no chips would render so the empty state is just input + function row.
-//   2. The borderless TextField — the prompt the user is composing.
-//   3. Function row: model menu + effort menu on the leading edge, the
+//   1. Context chip row: app chip + per-app screenshot toggle, behavior
+//      chips. Pasted clipboards are NOT here — they live inline inside
+//      the prompt input as rich-text attachments.
+//   2. Prompt input — a `ChipInputView` (NSTextView under the hood). The
+//      user types text, and Cmd+V inserts a chip attachment at the
+//      caret. Backspace deletes a chip atomically; the chip's X button
+//      deletes it on click. The whole field — text + chips interleaved
+//      — is the prompt.
+//   3. Function row: model + effort menus on the leading edge, the
 //      circular send button on the trailing edge.
 //
-// The whole card is a single visual surface so the user reads it as the
-// "this is what I'd send right now" packet. Submit goes through Return on
-// the field or the trailing send button — both call the same closure.
+// State that lives here:
 //
-// `inputFocused` mirrors first-responder state to the view-model so the
-// closed-bar status emoji can flip to `:o` (listening) while composing,
-// without polluting `AgentService.status`.
+//   - `inputModel`: an `@Observable` bridge to the NSTextView's storage.
+//     Exposes `displayText` (typed text only, drives the placeholder) and
+//     `snapshot()` (walks storage → (prompt-with-markers, clipboards)).
+//   - `policyStore`: per-app "always capture screenshot" toggle. If the
+//     toggle is on for the current bundleId, every submit attaches a
+//     fresh window snapshot.
 
 struct ComposerCard: View {
     let senseStore: SenseStore
     let agentService: AgentService
     let configService: ConfigService
+    let policyStore: VisualCapturePolicyStore
+    /// Owned by `NotchViewModel` so the typed text + chips persist
+    /// across notch close/reopen cycles. The composer view is recreated
+    /// on every open (it's mounted under a `status == .opened` gate);
+    /// holding this in `@State` would wipe the input every time.
+    let inputModel: ChipInputModel
     @Binding var inputFocused: Bool
 
-    @State private var text: String = ""
-    @State private var deselectedChipKeys: Set<String> = []
-    @FocusState private var focused: Bool
+    @State private var deselectedBehaviorKeys: Set<String> = []
 
-    /// Disable the send button when the trimmed prompt is empty so the user
-    /// can't fire an empty turn (the sidecar would 400). Keeping the button
-    /// visible-but-dim (rather than hidden) prevents the input row width from
-    /// shifting as the user types.
+    /// Disable the send button when the typed prompt is effectively empty.
+    /// Chips alone don't count — the LLM contract is "the user actually
+    /// said something", and a bag of pastes with no question is a bug
+    /// shape, not a turn.
     private var canSubmit: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var hasChips: Bool {
-        !senseStore.context.behaviors.isEmpty
-            || senseStore.context.clipboard != nil
-            || (senseStore.visualSnapshotAvailable && senseStore.context.behaviors.isEmpty)
-            || senseStore.context.app != nil
+        !inputModel.isTextEmpty
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if hasChips {
-                ContextChipsView(
-                    senseStore: senseStore,
-                    deselectedKeys: $deselectedChipKeys
-                )
-            }
+            ContextChipsView(
+                senseStore: senseStore,
+                policyStore: policyStore,
+                deselectedBehaviorKeys: $deselectedBehaviorKeys
+            )
             inputRow
             functionRow
+        }
+        .onChange(of: senseStore.context.app?.bundleId) { _, _ in
+            // App switch invalidates the in-flight prompt — both typed
+            // text and chips were assembled with the previous app in
+            // mind. Reset the field so a turn aimed at the new app can't
+            // accidentally inherit the previous app's pastes.
+            inputModel.clear()
         }
     }
 
     // MARK: - Input row
 
     private var inputRow: some View {
-        ZStack(alignment: .leading) {
-            // Custom-overlay placeholder. Drawing it ourselves (instead of
-            // using `TextField("…", text:)`) keeps the placeholder pinned
-            // to the same baseline as typed text on every focus transition;
-            // AppKit's NSTextField placeholder shifts ~1pt when the field
-            // editor swaps in, which reads as a flicker.
-            //
-            // Always kept in the layout (opacity-toggled, not `if`-toggled)
-            // so the ZStack's height stays anchored to Text's line height
-            // in both states. If we removed it via `if`, the row would
-            // collapse to NSTextField's slightly shorter intrinsic height
-            // the moment the user types, shrinking the whole notch by ~1pt.
+        ZStack(alignment: .topLeading) {
+            // Custom-overlay placeholder. Drawing it ourselves keeps the
+            // baseline pinned across focus transitions; AppKit's
+            // placeholder shifts ~1pt when the field editor swaps in,
+            // which reads as a flicker.
             Text("What can I do for you?")
-                .foregroundStyle(.white.opacity(text.isEmpty ? 0.35 : 0))
+                .font(.system(size: 15))
+                .foregroundStyle(.white.opacity(inputModel.isStorageEmpty ? 0.35 : 0))
+                .padding(.vertical, 4)
                 .allowsHitTesting(false)
-            TextField("", text: $text)
-                .textFieldStyle(.plain)
-                .focused($focused)
-                .onChange(of: focused) { _, newValue in
-                    inputFocused = newValue
-                }
-                .onSubmit { submit() }
+            ChipInputView(
+                model: inputModel,
+                font: NSFont.systemFont(ofSize: 15),
+                textColor: .white,
+                onSubmit: { submit() },
+                onFocusChange: { inputFocused = $0 }
+            )
         }
-        .font(.system(size: 15))
-        .foregroundStyle(.white)
-        .tint(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .padding(.vertical, 2)
         .accessibilityLabel(Text("Prompt input"))
     }
@@ -215,46 +218,39 @@ struct ComposerCard: View {
     }
 
     private func submit() {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
-        // Selection enforcement happens here: chips the user deselected get
-        // filtered out, so they never reach the sidecar log or LLM prompt.
-        let selection = CitedSelection(
-            deselectedBehaviors: deselectedChipKeys.subtracting([
-                ContextChipKey.clipboard,
-                ContextChipKey.visual
-            ]),
-            clipboardSelected: !deselectedChipKeys.contains(ContextChipKey.clipboard),
-            visualSelected: !deselectedChipKeys.contains(ContextChipKey.visual)
-        )
-        // Visual snapshot only happens at submit time: if the chip is on
-        // screen and the user kept it selected, capture once now and attach.
-        // No background screen-recording loop runs at any point.
-        let shouldCapture = selection.visualSelected
+        // Re-check the same gate the send button uses. Return is also a
+        // submit path, and `snapshot.prompt` includes `[[clipboard:N]]`
+        // markers — checking it would let a chips-only field submit a
+        // bag of pastes with no question.
+        guard !inputModel.isTextEmpty else { return }
+        let snapshot = inputModel.snapshot()
+
+        let selection = CitedSelection(deselectedBehaviors: deselectedBehaviorKeys)
+
+        // Per-app capture policy decides whether to pull a snapshot.
+        // No more per-turn visual chip — the toggle next to the app chip
+        // is the single source of truth.
+        let bundleId = senseStore.context.app?.bundleId
+        let shouldCaptureVisual = bundleId.map { policyStore.isAlwaysCapture(bundleId: $0) } ?? false
             && senseStore.visualSnapshotAvailable
-            && senseStore.context.behaviors.isEmpty
+
         let snapshotCtx = senseStore.context
-        let promptCopy = prompt
-        text = ""
-        // Chip selection persists within the session: if the user opted out
-        // of clipboard/visual on a prior turn, the next prompt should respect
-        // that until they re-select. Per-app chip identities still reset on
-        // app switch (handled in ContextChipsView).
+        let promptForTurn = snapshot.prompt
+        let clipboardsForTurn = snapshot.clipboards
+        inputModel.clear()
+        // Behavior selections persist within the session (see Notch UI
+        // design): we don't reset `deselectedBehaviorKeys` here.
         Task {
-            let visual: VisualMirror? = shouldCapture
+            let visual: VisualMirror? = shouldCaptureVisual
                 ? await senseStore.captureVisualSnapshot()
                 : nil
             let cited = CitedContextProjection.project(
                 from: snapshotCtx,
                 selection: selection,
-                visual: visual
+                visual: visual,
+                clipboards: clipboardsForTurn
             )
-            // The sidecar registers the turn and broadcasts
-            // `conversation.turnStarted`; the panel re-renders from there.
-            // We intentionally don't seed a local turn so the UI has a single
-            // source of truth (the sidecar's Conversation, mirrored by
-            // AgentService).
-            await agentService.submit(prompt: promptCopy, citedContext: cited)
+            await agentService.submit(prompt: promptForTurn, citedContext: cited)
         }
     }
 }

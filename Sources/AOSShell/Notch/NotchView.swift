@@ -196,7 +196,8 @@ struct NotchView: View {
                 OpenedPanelView(
                     viewModel: viewModel,
                     senseStore: viewModel.senseStore,
-                    agentService: viewModel.agentService
+                    agentService: viewModel.agentService,
+                    visualCapturePolicyStore: viewModel.visualCapturePolicyStore
                 )
                 .transition(.blurReplace)
             }
