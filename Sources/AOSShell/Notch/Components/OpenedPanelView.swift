@@ -141,8 +141,6 @@ struct OpenedPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             if hasSession {
                 history
-            } else {
-                Spacer(minLength: 0)
             }
             warningBanner
             liveComposer
@@ -231,26 +229,26 @@ struct OpenedPanelView: View {
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
-    /// Live chips of the current SenseContext + the input field. Travels
-    /// together so the user reads "this is what I'd be sending right now".
+    /// Single composer card per the redesign: chips, then the input, then
+    /// a function row (model + effort menus on the left, send on the right).
+    /// Renders as one bordered rounded rect so the user reads "this entire
+    /// box is what I'd be sending right now".
     private var liveComposer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ContextChipsView(senseStore: senseStore)
-            AgentInputField(
-                senseStore: senseStore,
-                agentService: agentService,
-                inputFocused: Binding(
-                    get: { viewModel.inputFocused },
-                    set: { viewModel.inputFocused = $0 }
-                )
+        ComposerCard(
+            senseStore: senseStore,
+            agentService: agentService,
+            configService: viewModel.configService,
+            inputFocused: Binding(
+                get: { viewModel.inputFocused },
+                set: { viewModel.inputFocused = $0 }
             )
-            // Disable typing + submission when no provider is configured —
-            // the agent loop has nothing to dispatch the turn to. Permission
-            // gaps don't disable the input here: the user can still queue
-            // a prompt while granting access in Settings.
-            .disabled(!viewModel.providerService.hasReadyProvider)
-            .opacity(viewModel.providerService.hasReadyProvider ? 1.0 : 0.55)
-        }
+        )
+        // Disable typing + submission when no provider is configured —
+        // the agent loop has nothing to dispatch the turn to. Permission
+        // gaps don't disable the input here: the user can still queue
+        // a prompt while granting access in Settings.
+        .disabled(!viewModel.providerService.hasReadyProvider)
+        .opacity(viewModel.providerService.hasReadyProvider ? 1.0 : 0.55)
         .background(
             GeometryReader { geo in
                 Color.clear.preference(key: ComposerHeightKey.self, value: geo.size.height)
@@ -263,7 +261,7 @@ struct OpenedPanelView: View {
 
     private var history: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 20) {
                 ForEach(agentService.turns) { turn in
                     turnRow(turn)
                         .id(turn.id)
@@ -319,11 +317,12 @@ struct OpenedPanelView: View {
                     .textSelection(.enabled)
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                Text(turnEmoji(turn))
+            HStack(alignment: .top, spacing: 8) {
+                turnEmojiView(turn)
                     .font(.system(size: 13, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white)
-                    .frame(width: 24, alignment: .leading)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 Text(turn.reply)
                     .font(.system(size: 13, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.9))
@@ -348,7 +347,22 @@ struct OpenedPanelView: View {
 
     /// Per-turn emoji. Mirrors the previous session-region mapping, but reads
     /// the turn's own status (not the global `status`) so older completed
-    /// turns keep `:D` even while a newer turn is mid-`:O` streaming.
+    /// turns keep `:D` even while a newer turn is mid-`:O` streaming. While a
+    /// turn is in the "thinking, no tokens yet" state we render an animated
+    /// `:/` ↔ `:\` flip via TimelineView so the user sees a heartbeat instead
+    /// of a static glyph.
+    @ViewBuilder
+    private func turnEmojiView(_ turn: ConversationTurn) -> some View {
+        if turn.status == .thinking && turn.reply.isEmpty {
+            TimelineView(.periodic(from: .now, by: 0.4)) { ctx in
+                let tick = Int(ctx.date.timeIntervalSinceReferenceDate / 0.4)
+                Text(tick.isMultiple(of: 2) ? ":/" : ":\\")
+            }
+        } else {
+            Text(turnEmoji(turn))
+        }
+    }
+
     private func turnEmoji(_ turn: ConversationTurn) -> String {
         switch turn.status {
         case .error: return ":("

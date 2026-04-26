@@ -41,12 +41,13 @@ public final class NotchViewModel {
     // MARK: - Constants
 
     /// Width is fixed; height grows with the conversation while the agent
-    /// loop is active. `compact` fits exactly: top safe inset + context chips
-    /// + 1-line input + bottom padding (room for the gear). `max` is the
+    /// loop is active. `compactMin` is a floor — the panel is never shorter
+    /// than this even if the composer measures smaller (avoids the silhouette
+    /// flickering on first frame before measurements arrive). `max` is the
     /// hosting NSWindow's strip height — the silhouette never grows past it,
     /// instead the history ScrollView starts scrolling.
     public let notchOpenedWidth: CGFloat = 500
-    public let notchOpenedCompactHeight: CGFloat = 170
+    public let notchOpenedCompactMinHeight: CGFloat = 100
     public let notchOpenedMaxHeight: CGFloat = 480
     /// Settings panel uses a fixed 240pt budget — provider/model/effort
     /// cards + quit button were laid out for this height and don't benefit
@@ -74,11 +75,18 @@ public final class NotchViewModel {
         if showSettings {
             return CGSize(width: notchOpenedWidth, height: notchOpenedSettingsHeight)
         }
+        // No turns yet: panel hugs the composer card so the empty state
+        // doesn't show wasted whitespace between the notch strip and the
+        // input box. `openedContentVerticalChrome` already accounts for
+        // top safe inset + bottom padding; the inner `spacing(8)` between
+        // history and composer is irrelevant when history is absent.
         guard isAgentLoopActive else {
-            return CGSize(width: notchOpenedWidth, height: notchOpenedCompactHeight)
+            let desired = deviceNotchRect.height + composerContentHeight + 16
+            let clamped = max(desired, notchOpenedCompactMinHeight)
+            return CGSize(width: notchOpenedWidth, height: clamped)
         }
         let desired = openedContentVerticalChrome + historyContentHeight + composerContentHeight
-        let clamped = min(max(desired, notchOpenedCompactHeight), notchOpenedMaxHeight)
+        let clamped = min(max(desired, notchOpenedCompactMinHeight), notchOpenedMaxHeight)
         return CGSize(width: notchOpenedWidth, height: clamped)
     }
 
