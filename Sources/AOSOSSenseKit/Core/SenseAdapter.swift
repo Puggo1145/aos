@@ -4,17 +4,16 @@ import Foundation
 //
 // Per `docs/designs/os-sense.md` §"SenseAdapter 协议".
 //
-// Stage 0 carve-out:
-// The design's full signature is
-//     `func attach(hub: AXObserverHub, target: RunningApp) -> AsyncStream<[BehaviorEnvelope]>`
-// However, `AXObserverHub` is an OS Sense **Stage 1** module and is intentionally
-// not part of this package round (per the no-stub / no-temp-modules rule).
-// To keep the protocol compilable without forward-referencing a missing type,
-// the `hub:` parameter is omitted at Stage 0.
+// `attach` is the seam where adapters subscribe to AX (or other) signals
+// for `target`. Adapters MUST go through the shared `AXObserverHub` for
+// any AX subscription so observer lifetimes are managed in one place
+// (design §"共享 AX 底座"). Each yield from the returned stream is the
+// adapter's **complete** current envelope set — `SenseStore` replaces
+// the slot wholesale, never appends.
 //
-// Stage 1 will introduce `AXObserverHub` and the protocol signature will gain
-// a `hub:` argument then. Because zero adapters exist in this round, the
-// signature change is non-breaking for any downstream code today.
+// `hub` is `@MainActor`-isolated; an actor adapter calling into it must
+// `await`. That's the design intent: the hub serializes AX observer
+// mutations behind one isolation boundary.
 
 public typealias AdapterID = String
 
@@ -34,14 +33,14 @@ public protocol SenseAdapter: Actor {
     static var supportedBundleIds: Set<String> { get }
     var requiredPermissions: Set<Permission> { get }
 
-    /// Stage 0: subscribe to AX (or other) signals for `target` and emit the
-    /// adapter's full envelope set on each change. Each emission **replaces**
-    /// the previous set (not appended).
-    ///
-    /// Stage 1 will prepend `hub: AXObserverHub` to the parameter list.
-    func attach(target: RunningApp) -> AsyncStream<[BehaviorEnvelope]>
+    /// Subscribe to AX (or other) signals for `target` via the shared `hub`
+    /// and return an `AsyncStream` of full envelope sets. Each emission
+    /// **replaces** the previous set in `SenseStore`'s `behaviorsBySource`.
+    /// `async` because the typical implementation does `await hub.subscribe(...)`
+    /// and internal AX reads before establishing the stream.
+    func attach(hub: AXObserverHub, target: RunningApp) async -> AsyncStream<[BehaviorEnvelope]>
 
     /// Called when `target` leaves the foreground; adapter must release all
-    /// subscriptions / observers it holds.
+    /// subscriptions / observers it holds via the hub.
     func detach() async
 }

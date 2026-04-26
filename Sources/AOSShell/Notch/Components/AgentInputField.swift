@@ -28,6 +28,7 @@ struct ComposerCard: View {
     @Binding var inputFocused: Bool
 
     @State private var text: String = ""
+    @State private var deselectedChipKeys: Set<String> = []
     @FocusState private var focused: Bool
 
     /// Disable the send button when the trimmed prompt is empty so the user
@@ -39,13 +40,19 @@ struct ComposerCard: View {
     }
 
     private var hasChips: Bool {
-        !senseStore.context.behaviors.isEmpty || senseStore.context.app != nil
+        !senseStore.context.behaviors.isEmpty
+            || senseStore.context.clipboard != nil
+            || (senseStore.visualSnapshotAvailable && senseStore.context.behaviors.isEmpty)
+            || senseStore.context.app != nil
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if hasChips {
-                ContextChipsView(senseStore: senseStore)
+                ContextChipsView(
+                    senseStore: senseStore,
+                    deselectedKeys: $deselectedChipKeys
+                )
             }
             inputRow
             functionRow
@@ -210,13 +217,41 @@ struct ComposerCard: View {
     private func submit() {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
-        let cited = CitedContextProjection.project(from: senseStore.context)
+        // Selection enforcement happens here: chips the user deselected get
+        // filtered out, so they never reach the sidecar log or LLM prompt.
+        let selection = CitedSelection(
+            deselectedBehaviors: deselectedChipKeys.subtracting([
+                ContextChipKey.clipboard,
+                ContextChipKey.visual
+            ]),
+            clipboardSelected: !deselectedChipKeys.contains(ContextChipKey.clipboard),
+            visualSelected: !deselectedChipKeys.contains(ContextChipKey.visual)
+        )
+        // Visual snapshot only happens at submit time: if the chip is on
+        // screen and the user kept it selected, capture once now and attach.
+        // No background screen-recording loop runs at any point.
+        let shouldCapture = selection.visualSelected
+            && senseStore.visualSnapshotAvailable
+            && senseStore.context.behaviors.isEmpty
+        let snapshotCtx = senseStore.context
         let promptCopy = prompt
-        // The sidecar registers the turn and broadcasts
-        // `conversation.turnStarted`; the panel re-renders from there. We
-        // intentionally don't seed a local turn so the UI has a single source
-        // of truth (the sidecar's Conversation, mirrored by AgentService).
-        Task { await agentService.submit(prompt: promptCopy, citedContext: cited) }
         text = ""
+        deselectedChipKeys.removeAll()
+        Task {
+            let visual: VisualMirror? = shouldCapture
+                ? await senseStore.captureVisualSnapshot()
+                : nil
+            let cited = CitedContextProjection.project(
+                from: snapshotCtx,
+                selection: selection,
+                visual: visual
+            )
+            // The sidecar registers the turn and broadcasts
+            // `conversation.turnStarted`; the panel re-renders from there.
+            // We intentionally don't seed a local turn so the UI has a single
+            // source of truth (the sidecar's Conversation, mirrored by
+            // AgentService).
+            await agentService.submit(prompt: promptCopy, citedContext: cited)
+        }
     }
 }

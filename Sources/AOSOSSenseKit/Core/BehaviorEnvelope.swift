@@ -44,7 +44,8 @@ public struct BehaviorEnvelope: Equatable, Sendable, Identifiable {
 public indirect enum JSONValue: Equatable, Sendable, Codable {
     case null
     case bool(Bool)
-    case number(Double)
+    case int(Int)
+    case double(Double)
     case string(String)
     case array([JSONValue])
     case object([String: JSONValue])
@@ -55,8 +56,10 @@ public indirect enum JSONValue: Equatable, Sendable, Codable {
             self = .null
         } else if let b = try? container.decode(Bool.self) {
             self = .bool(b)
-        } else if let n = try? container.decode(Double.self) {
-            self = .number(n)
+        } else if let i = try? container.decode(Int.self) {
+            self = .int(i)
+        } else if let d = try? container.decode(Double.self) {
+            self = .double(d)
         } else if let s = try? container.decode(String.self) {
             self = .string(s)
         } else if let a = try? container.decode([JSONValue].self) {
@@ -78,8 +81,10 @@ public indirect enum JSONValue: Equatable, Sendable, Codable {
             try container.encodeNil()
         case .bool(let b):
             try container.encode(b)
-        case .number(let n):
-            try container.encode(n)
+        case .int(let i):
+            try container.encode(i)
+        case .double(let d):
+            try container.encode(d)
         case .string(let s):
             try container.encode(s)
         case .array(let a):

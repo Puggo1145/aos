@@ -20,7 +20,6 @@ struct SenseStoreTests {
         #expect(store.context.app == nil)
         #expect(store.context.window == nil)
         #expect(store.context.behaviors.isEmpty)
-        #expect(store.context.visual == nil)
         #expect(store.context.clipboard == nil)
         #expect(store.context.permissions.denied.isEmpty)
     }
@@ -42,7 +41,6 @@ struct SenseStoreTests {
         #expect(store.context.window == window)
         // Other fields preserved.
         #expect(store.context.behaviors.isEmpty)
-        #expect(store.context.visual == nil)
         #expect(store.context.clipboard == nil)
         #expect(store.context.permissions.denied.isEmpty)
     }

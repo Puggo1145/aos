@@ -132,11 +132,16 @@ public struct PermissionState: Equatable, Sendable {
 /// because at process boot we may briefly lack a frontmost-app determination
 /// (no `NSWorkspace` activation event has fired yet). Once a frontmost app
 /// is observed, `app` is populated and the live-mirror invariant holds.
+///
+/// The visual fallback is **not** a live field on this struct: capturing a
+/// screen frame is expensive and only ever needed at submit time, so it's
+/// fetched on demand via `SenseStore.captureVisualSnapshot()` rather than
+/// held continuously. UI surfaces a "snapshot will be attached" affordance
+/// based on availability flags (see `SenseStore.visualSnapshotAvailable`).
 public struct SenseContext: Equatable, Sendable {
     public let app: AppIdentity?
     public let window: WindowIdentity?
     public let behaviors: [BehaviorEnvelope]
-    public let visual: VisualMirror?
     public let clipboard: ClipboardItem?
     public let permissions: PermissionState
 
@@ -144,14 +149,12 @@ public struct SenseContext: Equatable, Sendable {
         app: AppIdentity?,
         window: WindowIdentity?,
         behaviors: [BehaviorEnvelope],
-        visual: VisualMirror?,
         clipboard: ClipboardItem?,
         permissions: PermissionState
     ) {
         self.app = app
         self.window = window
         self.behaviors = behaviors
-        self.visual = visual
         self.clipboard = clipboard
         self.permissions = permissions
     }
@@ -160,7 +163,6 @@ public struct SenseContext: Equatable, Sendable {
         app: nil,
         window: nil,
         behaviors: [],
-        visual: nil,
         clipboard: nil,
         permissions: PermissionState(denied: [])
     )

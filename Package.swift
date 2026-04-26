@@ -3,13 +3,16 @@ import PackageDescription
 
 // AOS SwiftPM workspace.
 //
-// Declares three targets per docs/plans/agents-md-notch-ui-crispy-horizon.md §A:
-//   - executable `AOSShell` (Notch UI + RPC client + AgentService composition root)
-//   - library `AOSRPCSchema`     (Stage 1 of docs/plans/rpc-protocol.md)
-//   - library `AOSOSSenseKit`    (OS Sense Stage 0 minimal slice)
-//
-// Stage 1+ packages (AOSComputerUseKit, AOSAXSupport) are added by later
-// stages and intentionally absent from this round.
+// Targets:
+//   - executable `AOSShell`      (Notch UI + RPC client + AgentService composition root)
+//   - library `AOSRPCSchema`     (wire protocol — see docs/plans/rpc-protocol.md)
+//   - library `AOSOSSenseKit`    (OS Sense — see docs/designs/os-sense.md)
+//   - library `AOSAXSupport`     (shared AX SPI bridge — see docs/designs/os-sense.md
+//                                 §"共享 AX SPI 底层模块". Holds the
+//                                 `@_silgen_name("_AXUIElementGetWindow")`
+//                                 bridge so OS Sense and (future)
+//                                 AOSComputerUseKit can both depend on it
+//                                 without read-side ↔ write-side coupling.)
 let package = Package(
     name: "AOS",
     platforms: [
@@ -27,6 +30,10 @@ let package = Package(
         .library(
             name: "AOSOSSenseKit",
             targets: ["AOSOSSenseKit"]
+        ),
+        .library(
+            name: "AOSAXSupport",
+            targets: ["AOSAXSupport"]
         )
     ],
     targets: [
@@ -39,18 +46,31 @@ let package = Package(
             dependencies: ["AOSRPCSchema"],
             path: "Tests/AOSRPCSchemaTests"
         ),
-        // OS Sense Stage 0 — read-side OS state mirror. No dependency on
-        // `AOSRPCSchema`: per `docs/designs/os-sense.md` "依赖方向（核心契约）",
+        // Shared AX SPI bridge. Owns the `@_silgen_name` declaration for
+        // `_AXUIElementGetWindow` so OS Sense and a future AOSComputerUseKit
+        // both depend on this package, never on each other.
+        .target(
+            name: "AOSAXSupport",
+            path: "Sources/AOSAXSupport"
+        ),
+        .testTarget(
+            name: "AOSAXSupportTests",
+            dependencies: ["AOSAXSupport"],
+            path: "Tests/AOSAXSupportTests"
+        ),
+        // OS Sense — read-side OS state mirror. No dependency on
+        // `AOSRPCSchema`: per `docs/designs/os-sense.md` §"依赖方向（核心契约）",
         // OS Sense is read-side, RPC is wire — strict module isolation. The
         // Shell composition layer projects from the live model to the wire
         // schema; this package never imports the wire types.
         .target(
             name: "AOSOSSenseKit",
+            dependencies: ["AOSAXSupport"],
             path: "Sources/AOSOSSenseKit"
         ),
         .testTarget(
             name: "AOSOSSenseKitTests",
-            dependencies: ["AOSOSSenseKit"],
+            dependencies: ["AOSOSSenseKit", "AOSAXSupport"],
             path: "Tests/AOSOSSenseKitTests"
         ),
         // AOSShell — the macOS Notch UI executable. Depends on both library

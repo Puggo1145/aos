@@ -18,8 +18,10 @@
 - `BrowserAdapter`（`browser.tab`）
 - e2e：Finder 选文件、Chrome 切 tab → 对应 envelope 实时出现
 
-### Stage 3：视觉兜底
-- `ScreenMirror` 启停规则集成进 `SenseStore`
+### Stage 3：视觉兜底（submit-time）
+- `ScreenMirror.captureNow(forPid:)` 单次捕获 API
+- `SenseStore.visualSnapshotAvailable` gate（app + screen-recording grant），暴露 `captureVisualSnapshot()` 给 Shell
+- Shell 在 `AgentInputField.submit()` 内按 chip 选中状态调用一次 `captureVisualSnapshot()`，结果作为参数传入 `CitedContextProjection.project(from:selection:visual:)`
 
 ### Stage 4：Shell 集成
 - Shell 启动时构造 `SenseStore`
@@ -43,8 +45,10 @@
 - 静态检查：`Core/*` 任一文件不出现 `FinderAdapter` / `BrowserAdapter` / `finder.selection` / `browser.tab` 字面量
 
 **Stage 3**：
-- Figma 前台、无 selection / input → `visual.latestFrame` 在 1s 内有效，长边 ≤ 1280px
-- 在 Figma 选中元素 → `visual` 立即变为 nil，SCStream 停止
+- Figma 前台、无 selection / input、screen-recording 已授权 → Notch 展开后 chip 出现 "Window snapshot"，但**不发生任何截图捕获**（Activity Monitor 验证 AOS Shell 进程无 SCStream）
+- 用户在 Figma 选中元素 → 视觉 chip 自动从 row 中消失（`behaviors.isEmpty` 不再成立），仍未捕获任何截图
+- 用户保持视觉 chip 选中 → 点 send → Shell 单次调用 `SCScreenshotManager.captureImage(...)`，长边 ≤ 1280px 的 PNG 出现在 RPC `citedContext.visual.frame`
+- 用户取消视觉 chip 选中 → 点 send → RPC 中 `visual` 字段缺失，未发生捕获
 
 **Stage 4**：
 - 端到端：选中文本 → Notch 折叠态指示器更新 → 展开 → 点击 chip → 提交 → Bun RPC 收到包含该 envelope JSON 的 `citedContext`
