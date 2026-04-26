@@ -34,6 +34,7 @@ import {
 import { Dispatcher, RPCMethodError } from "../rpc/dispatcher";
 import { turns, type TurnRegistry } from "./registry";
 import { conversation as defaultConversation, Conversation } from "./conversation";
+import { contextObserver as defaultContextObserver, ContextObserver } from "./context-observer";
 import { logger } from "../log";
 
 const SYSTEM_PROMPT = "You are AOS, an AI agent embedded in macOS via the notch UI. Be concise and helpful.";
@@ -113,11 +114,26 @@ export interface RegisterAgentOptions {
   /// Override the conversation store (tests inject a fresh instance so each
   /// test starts from an empty history).
   conversation?: Conversation;
+  /// Override the context observer used by Dev Mode. Tests can pass a fresh
+  /// instance to assert what was published without touching the singleton.
+  contextObserver?: ContextObserver;
 }
 
 export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgentOptions = {}): void {
   const reg = opts.registry ?? turns;
   const convo = opts.conversation ?? defaultConversation;
+  const observer = opts.contextObserver ?? defaultContextObserver;
+
+  // Wire the observer's sink to the dispatcher. The agent loop only ever
+  // calls `observer.publish(...)`; this is the single edge where the
+  // dev-mode signal crosses into the wire protocol.
+  observer.setSink((snapshot) => {
+    dispatcher.notify(RPCMethod.devContextChanged, { snapshot });
+  });
+
+  dispatcher.registerRequest(RPCMethod.devContextGet, async () => {
+    return { snapshot: observer.latest() };
+  });
 
   dispatcher.registerRequest(RPCMethod.agentSubmit, async (raw): Promise<AgentSubmitResult> => {
     const params = raw as AgentSubmitParams;
@@ -139,7 +155,7 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
     const controller = reg.add(turnId);
 
     // Detached: ack must return inside agent.submit's 1s budget.
-    void runTurn(dispatcher, convo, { turnId, signal: controller.signal })
+    void runTurn(dispatcher, convo, { turnId, signal: controller.signal, observer })
       .catch((err) => logger.error("agent loop fatal", { turnId, err: String(err) }))
       .finally(() => reg.remove(turnId));
 
@@ -176,9 +192,10 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
 export async function runTurn(
   dispatcher: Dispatcher,
   convo: Conversation,
-  params: { turnId: string; signal: AbortSignal },
+  params: { turnId: string; signal: AbortSignal; observer?: ContextObserver },
 ): Promise<void> {
   const { turnId, signal } = params;
+  const observer = params.observer ?? defaultContextObserver;
 
   dispatcher.notify(RPCMethod.uiStatus, { turnId, status: "thinking" });
 
@@ -215,11 +232,28 @@ export async function runTurn(
     // single change that gives the LLM cross-turn memory: prior successful
     // turns contribute their (user, assistant) pair; the just-started turn
     // contributes its user message; errored/cancelled turns are skipped.
+    const messages = convo.llmMessages();
+
+    // Dev-mode observability: capture the exact (systemPrompt, messages)
+    // pair we are about to hand to the LLM. Publish BEFORE the network
+    // call so a Dev Mode window opened mid-turn always sees the latest
+    // input, not a stale snapshot. The observer swallows sink failures
+    // — observation must never break the turn.
+    observer.publish({
+      capturedAt: Date.now(),
+      turnId,
+      modelId: model.id,
+      providerId: model.provider,
+      effort: effort ?? null,
+      systemPrompt: SYSTEM_PROMPT,
+      messagesJson: ContextObserver.renderMessages(messages),
+    });
+
     const eventStream = streamSimple(
       model,
       {
         systemPrompt: SYSTEM_PROMPT,
-        messages: convo.llmMessages(),
+        messages,
       },
       { signal, reasoning: effort },
     );

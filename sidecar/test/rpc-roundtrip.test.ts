@@ -37,6 +37,8 @@ import {
   type ProviderCancelLoginParams,
   type ProviderLoginStatusParams,
   type ProviderStatusChangedParams,
+  type DevContextGetParams,
+  type DevContextChangedParams,
 } from "../src/rpc/rpc-types";
 
 // Resolve repo root by walking up from this test file.
@@ -226,6 +228,24 @@ test("provider.statusChanged fixture roundtrips byte-equal", () => {
   const note = parsed as RPCNotification<ProviderStatusChangedParams>;
   expect(note.method).toBe(RPCMethod.providerStatusChanged);
   expect(["ready", "unauthenticated"]).toContain(note.params.state);
+});
+
+test("dev.context.get fixture roundtrips byte-equal", () => {
+  assertRoundtrip("dev.context.get.json");
+  const { parsed } = loadFixture("dev.context.get.json");
+  const req = parsed as RPCRequest<DevContextGetParams>;
+  expect(req.method).toBe(RPCMethod.devContextGet);
+});
+
+test("dev.context.changed fixture roundtrips byte-equal", () => {
+  assertRoundtrip("dev.context.changed.json");
+  const { parsed } = loadFixture("dev.context.changed.json");
+  const note = parsed as RPCNotification<DevContextChangedParams>;
+  expect(note.method).toBe(RPCMethod.devContextChanged);
+  expect(note.params.snapshot.modelId).toBe("gpt-5.5");
+  expect(note.params.snapshot.providerId).toBe("chatgpt-plan");
+  expect(note.params.snapshot.effort).toBe("medium");
+  expect(typeof note.params.snapshot.messagesJson).toBe("string");
 });
 
 test("AOS_PROTOCOL_VERSION equals 1.0.0", () => {

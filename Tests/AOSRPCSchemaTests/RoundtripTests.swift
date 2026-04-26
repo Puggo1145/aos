@@ -206,6 +206,22 @@ final class RoundtripTests: XCTestCase {
         )
     }
 
+    // MARK: - dev.*
+
+    func testDevContextGetRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "dev.context.get.json",
+            as: RPCRequest<DevContextGetParams>.self
+        )
+    }
+
+    func testDevContextChangedRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "dev.context.changed.json",
+            as: RPCNotification<DevContextChangedParams>.self
+        )
+    }
+
     // MARK: - Schema invariants
 
     func testProtocolVersionConstant() {

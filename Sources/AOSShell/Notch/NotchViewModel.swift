@@ -69,10 +69,12 @@ public final class NotchViewModel {
     public let notchOpenedWidth: CGFloat = 500
     public let notchOpenedCompactMinHeight: CGFloat = 100
     public let notchOpenedMaxHeight: CGFloat = 480
-    /// Settings panel uses a fixed 240pt budget — provider/model/effort
-    /// cards + quit button were laid out for this height and don't benefit
-    /// from the conversation panel's larger max.
-    public let notchOpenedSettingsHeight: CGFloat = 240
+    /// Settings panel uses a fixed budget sized to fit:
+    /// top-safe-inset + back chevron + provider/model/effort cards row +
+    /// permissions row + dev-mode row + quit button + bottom padding. Bumped
+    /// from 240 → 300 when Dev Mode was added; revisit alongside any new
+    /// settings row.
+    public let notchOpenedSettingsHeight: CGFloat = 300
 
     /// Vertical chrome around the dynamic content inside OpenedPanelView:
     /// top safe inset + spacing(8) between history and composer + bottom

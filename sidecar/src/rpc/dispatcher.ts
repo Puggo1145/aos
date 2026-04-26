@@ -103,6 +103,13 @@ function directionOf(method: string): Direction {
     case "ui":
     case "conversation":
       return "bunToShell";
+    case "dev":
+      // `dev.*` is split per-method like `provider.*`: requests are
+      // Shell→Bun (e.g. `dev.context.get`) and notifications are Bun→Shell
+      // (e.g. `dev.context.changed`). Method-level kind is enforced via
+      // `DEV_METHOD_KINDS` below — namespace returns `both` so the
+      // request/notification splits coexist.
+      return "both";
     case "provider":
       // Method-level direction: status/startLogin/cancelLogin are Shell→Bun
       // (inbound requests we handle), while loginStatus/statusChanged are
@@ -121,14 +128,32 @@ function directionOf(method: string): Direction {
 /// Per-method direction within `provider.*`. Requests are Shell→Bun;
 /// notifications are Bun→Shell. Unknown methods fall through to
 /// MethodNotFound on the inbound side and a programmer-error on outbound.
-type ProviderMethodKind = "request" | "notification";
-const PROVIDER_METHOD_KINDS: Record<string, ProviderMethodKind> = {
+type SplitMethodKind = "request" | "notification";
+const PROVIDER_METHOD_KINDS: Record<string, SplitMethodKind> = {
   "provider.status": "request",
   "provider.startLogin": "request",
   "provider.cancelLogin": "request",
   "provider.loginStatus": "notification",
   "provider.statusChanged": "notification",
 };
+
+/// Per-method direction within `dev.*`. Same shape as PROVIDER_METHOD_KINDS:
+/// the namespace is `both` so requests and notifications can coexist; this
+/// table is what makes `notify("dev.context.get", ...)` or
+/// `request("dev.context.changed", ...)` fail loudly at the dispatcher
+/// boundary (catches the exact category of mistake P2.1 flagged).
+const DEV_METHOD_KINDS: Record<string, SplitMethodKind> = {
+  "dev.context.get": "request",
+  "dev.context.changed": "notification",
+};
+
+/// Look up a method's split kind across every `both`-direction namespace.
+/// Returns `undefined` when the namespace isn't split or the method isn't
+/// listed, in which case the existing namespace-level direction check is
+/// the only enforcement (matches today's `rpc.*` behavior).
+function splitKindOf(method: string): SplitMethodKind | undefined {
+  return PROVIDER_METHOD_KINDS[method] ?? DEV_METHOD_KINDS[method];
+}
 
 // ---------------------------------------------------------------------------
 // Dispatcher
@@ -183,6 +208,15 @@ export class Dispatcher {
         new Error(`programmer error: Bun cannot initiate '${method}' (namespace direction shellToBun)`),
       );
     }
+    // Within `both`-direction namespaces (provider.*, dev.*) some methods are
+    // notifications, not requests. Initiating one as a request is a
+    // programmer error and must fail loudly — same shape as `notify` below.
+    const kind = splitKindOf(method);
+    if (kind === "notification") {
+      return Promise.reject(
+        new Error(`programmer error: '${method}' is a notification method, cannot be sent as request`),
+      );
+    }
 
     const id: RPCId = `bun-${this.nextId++}`;
     const frame: RPCRequest<object> = { jsonrpc: "2.0", id, method, params };
@@ -229,9 +263,9 @@ export class Dispatcher {
     if (dir === "shellToBun") {
       throw new Error(`programmer error: Bun cannot send notification '${method}' (direction shellToBun)`);
     }
-    // provider.* is `both` at namespace level, but request methods must not
-    // be sent as notifications (and vice versa).
-    const kind = PROVIDER_METHOD_KINDS[method];
+    // provider.* / dev.* are `both` at namespace level, but request methods
+    // must not be sent as notifications (and vice versa).
+    const kind = splitKindOf(method);
     if (kind === "request") {
       throw new Error(`programmer error: '${method}' is a request method, cannot be sent as notification`);
     }

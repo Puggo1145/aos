@@ -172,6 +172,42 @@ test("notification dispatch with no response", async () => {
   close();
 });
 
+// ---------------------------------------------------------------------------
+// dev.* split-direction enforcement (P2.1 fix).
+//
+// Namespace-level direction is `both` so request methods (`dev.context.get`)
+// and notification methods (`dev.context.changed`) can coexist; the per-method
+// `DEV_METHOD_KINDS` table inside the dispatcher is what catches "wrong shape"
+// misuse at the boundary instead of letting it fail silently downstream.
+// ---------------------------------------------------------------------------
+
+test("split-direction: notify('dev.context.get', ...) throws programmer error", () => {
+  const { a, close } = makePair();
+  expect(() => a.notify("dev.context.get", {})).toThrow(/notification/);
+  close();
+});
+
+test("split-direction: request('dev.context.changed', ...) rejects with programmer error", async () => {
+  const { a, close } = makePair();
+  let caught: unknown;
+  try {
+    await a.request("dev.context.changed", {});
+  } catch (e) {
+    caught = e;
+  }
+  expect(String(caught)).toContain("notification method");
+  close();
+});
+
+// Symmetric guard for provider.* — exercises the same `splitKindOf` lookup so
+// regressions in the unified table are caught for both namespaces, not just
+// the newly added one.
+test("split-direction: notify('provider.status', ...) still throws (provider.* parity)", () => {
+  const { a, close } = makePair();
+  expect(() => a.notify("provider.status", {})).toThrow(/request method/);
+  close();
+});
+
 test("stop() rejects all pending outbound requests with DispatcherStopped", async () => {
   const { a, b, close } = makePair();
   // b never registers a handler so this would hang otherwise.

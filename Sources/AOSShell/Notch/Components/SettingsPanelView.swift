@@ -136,6 +136,8 @@ struct SettingsPanelView: View {
 
             permissionsRow
 
+            devModeRow
+
             Spacer(minLength: 0)
 
             quitButton
@@ -208,6 +210,41 @@ struct SettingsPanelView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Dev Mode
+    //
+    // Posts `.aosOpenDevMode`; the CompositionRoot's DevModeWindowController
+    // listens and presents the standalone Dev Mode window. We deliberately
+    // do not pass a callback through the view tree — the dev surface stays
+    // fully optional and decoupled from notch composition.
+
+    private var devModeRow: some View {
+        Button {
+            NotificationCenter.default.post(name: .aosOpenDevMode, object: nil)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "hammer")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 16)
+                Text("Dev Mode")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Quit

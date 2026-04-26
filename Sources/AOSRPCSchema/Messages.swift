@@ -158,6 +158,8 @@ public enum RPCMethod {
     public static let configSet = "config.set"
     public static let configSetEffort = "config.setEffort"
     public static let configMarkOnboardingCompleted = "config.markOnboardingCompleted"
+    public static let devContextGet = "dev.context.get"
+    public static let devContextChanged = "dev.context.changed"
 }
 
 // MARK: - JSONValue

@@ -29,6 +29,9 @@ public final class CompositionRoot {
     public private(set) var agentService: AgentService?
     public private(set) var providerService: ProviderService?
     public private(set) var configService: ConfigService?
+    public private(set) var devContextService: DevContextService?
+    public private(set) var devModeWindowController: DevModeWindowController?
+    private var devModeOpenObserver: NSObjectProtocol?
     public private(set) var notchWindowController: NotchWindowController?
 
     /// Latest fatal error surfaced during boot (e.g. handshake mismatch,
@@ -77,6 +80,22 @@ public final class CompositionRoot {
         self.configService = config
         let agent = AgentService(rpc: client)
         self.agentService = agent
+
+        // Dev Mode is purely observational: the service subscribes to
+        // `dev.context.changed` and the controller owns its own NSWindow.
+        // Wire the "Dev Mode" button in Settings to the window via
+        // NotificationCenter so the notch view tree stays unaware of it.
+        let devContext = DevContextService(rpc: client)
+        self.devContextService = devContext
+        let devWindow = DevModeWindowController(contextService: devContext)
+        self.devModeWindowController = devWindow
+        self.devModeOpenObserver = NotificationCenter.default.addObserver(
+            forName: .aosOpenDevMode,
+            object: nil,
+            queue: .main
+        ) { [weak devWindow] _ in
+            Task { @MainActor in devWindow?.show() }
+        }
 
         // 4. Mount the notch window before awaiting handshake so the user
         //    sees the bar immediately. ProviderService starts in `unknown`
@@ -154,6 +173,13 @@ public final class CompositionRoot {
 
     public func stop() {
         EventMonitors.shared.stop()
+        if let token = devModeOpenObserver {
+            NotificationCenter.default.removeObserver(token)
+            devModeOpenObserver = nil
+        }
+        devModeWindowController?.close()
+        devModeWindowController = nil
+        devContextService = nil
         notchWindowController?.destroy()
         notchWindowController = nil
         rpcClient?.stop()

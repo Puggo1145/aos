@@ -115,6 +115,8 @@ export const RPCMethod = {
   configSet: "config.set",
   configSetEffort: "config.setEffort",
   configMarkOnboardingCompleted: "config.markOnboardingCompleted",
+  devContextGet: "dev.context.get",
+  devContextChanged: "dev.context.changed",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -435,4 +437,42 @@ export type ConfigMarkOnboardingCompletedParams = Record<string, never>;
 
 export interface ConfigMarkOnboardingCompletedResult {
   hasCompletedOnboarding: true;
+}
+
+// ---------------------------------------------------------------------------
+// dev.* — observability surface for the Shell's Dev Mode window.
+//
+// `dev.context.get`     — Shell→Bun request. Returns the latest LLM context
+//                         snapshot the agent loop captured, or null if the
+//                         loop hasn't produced a turn since process start.
+// `dev.context.changed` — Bun→Shell notification fired once per turn,
+//                         immediately before `streamSimple()` is invoked.
+//
+// `messagesJson` is a pre-formatted JSON string of the `Message[]` passed
+// to the LLM provider — the wire's idea of "原文". The Shell renders it
+// as monospace text; no further parsing is performed.
+// ---------------------------------------------------------------------------
+
+export interface DevContextSnapshot {
+  /// Milliseconds since epoch.
+  capturedAt: number;
+  turnId: string;
+  modelId: string;
+  providerId: string;
+  /// Reasoning effort applied for this turn; `null` for non-reasoning models.
+  effort: string | null;
+  systemPrompt: string;
+  /// Pretty-printed JSON of the messages array passed to `streamSimple`.
+  messagesJson: string;
+}
+
+export type DevContextGetParams = Record<string, never>;
+
+export interface DevContextGetResult {
+  /// `null` when the agent loop has not yet produced a turn.
+  snapshot: DevContextSnapshot | null;
+}
+
+export interface DevContextChangedParams {
+  snapshot: DevContextSnapshot;
 }
