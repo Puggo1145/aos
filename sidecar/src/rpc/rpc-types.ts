@@ -11,7 +11,7 @@
 
 /// Bumped per docs/designs/rpc-protocol.md §"版本协商":
 /// MAJOR mismatch ⇒ Shell rejects handshake; MINOR/PATCH ⇒ warn + accept.
-export const AOS_PROTOCOL_VERSION = "1.0.0" as const;
+export const AOS_PROTOCOL_VERSION = "2.0.0" as const;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC envelopes
@@ -75,6 +75,12 @@ export const RPCErrorCode = {
   // agent.* segment — agent-loop-level failures
   agentContextOverflow: -32300,
   agentConfigInvalid: -32301,
+  // session.* segment
+  unknownSession: -32400,
+  /// Reserved: emitted when an RPC implicitly needs an active session and
+  /// none exists. Currently every session-aware call carries an explicit
+  /// `sessionId`, so this code is unused on the wire today.
+  noActiveSession: -32401,
 } as const;
 
 export type RPCErrorCodeName = keyof typeof RPCErrorCode;
@@ -121,6 +127,12 @@ export const RPCMethod = {
   configMarkOnboardingCompleted: "config.markOnboardingCompleted",
   devContextGet: "dev.context.get",
   devContextChanged: "dev.context.changed",
+  sessionCreate: "session.create",
+  sessionList: "session.list",
+  sessionActivate: "session.activate",
+  sessionCreated: "session.created",
+  sessionActivated: "session.activated",
+  sessionListChanged: "session.listChanged",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -156,6 +168,7 @@ export type PingResult = Record<string, never>;
 // ---------------------------------------------------------------------------
 
 export interface AgentSubmitParams {
+  sessionId: string;
   turnId: string;
   prompt: string;
   citedContext: CitedContext;
@@ -166,6 +179,7 @@ export interface AgentSubmitResult {
 }
 
 export interface AgentCancelParams {
+  sessionId: string;
   turnId: string;
 }
 
@@ -173,10 +187,13 @@ export interface AgentCancelResult {
   cancelled: boolean;
 }
 
-/// `agent.reset` clears the entire conversation. Cancels any in-flight turn.
-/// Sidecar emits `conversation.reset` after the wipe so all observers can
-/// discard their mirrors.
-export type AgentResetParams = Record<string, never>;
+/// `agent.reset` clears one session's conversation. Cancels that session's
+/// in-flight turn (if any). Sidecar emits `conversation.reset { sessionId }`
+/// after the wipe so observers can drop the mirror for that session, and
+/// `session.listChanged` so the history list reflects the zeroed turnCount.
+export interface AgentResetParams {
+  sessionId: string;
+}
 
 export interface AgentResetResult {
   ok: boolean;
@@ -219,10 +236,13 @@ export interface ConversationTurnWire {
 }
 
 export interface ConversationTurnStartedParams {
+  sessionId: string;
   turn: ConversationTurnWire;
 }
 
-export type ConversationResetParams = Record<string, never>;
+export interface ConversationResetParams {
+  sessionId: string;
+}
 
 // ---------------------------------------------------------------------------
 // CitedContext — wire-only projection of Shell's SenseContext
@@ -291,6 +311,7 @@ export interface CitedClipboardImageMetadata {
 // ---------------------------------------------------------------------------
 
 export interface UITokenParams {
+  sessionId: string;
   turnId: string;
   delta: string;
 }
@@ -302,17 +323,19 @@ export interface UITokenParams {
 /// Kept on a separate channel from `ui.token` so the Notch panel can render
 /// the reasoning trace distinctly from the visible reply.
 export type UIThinkingParams =
-  | { turnId: string; kind: "delta"; delta: string }
-  | { turnId: string; kind: "end" };
+  | { sessionId: string; turnId: string; kind: "delta"; delta: string }
+  | { sessionId: string; turnId: string; kind: "end" };
 
 export type UIStatus = "thinking" | "tool_calling" | "waiting_input" | "done";
 
 export interface UIStatusParams {
+  sessionId: string;
   turnId: string;
   status: UIStatus;
 }
 
 export interface UIErrorParams {
+  sessionId: string;
   turnId: string;
   code: number;
   message: string;
@@ -538,6 +561,7 @@ export interface ConfigMarkOnboardingCompletedResult {
 export interface DevContextSnapshot {
   /// Milliseconds since epoch.
   capturedAt: number;
+  sessionId: string;
   turnId: string;
   modelId: string;
   providerId: string;
@@ -558,3 +582,62 @@ export interface DevContextGetResult {
 export interface DevContextChangedParams {
   snapshot: DevContextSnapshot;
 }
+
+// ---------------------------------------------------------------------------
+// session.* — bidirectional namespace (Shell↔Bun)
+//
+// Per docs/designs/session-management.md. Wire shape mirrors `SessionListItem`
+// in `agent/session/types.ts`. `turnCount` and `lastActivityAt` are computed
+// on demand by the Sidecar — no caching, no drift.
+// ---------------------------------------------------------------------------
+
+export interface SessionListItem {
+  id: string;
+  title: string;
+  /// Milliseconds since epoch.
+  createdAt: number;
+  /// Number of `status === "done"` turns.
+  turnCount: number;
+  /// Last turn's `startedAt`; equals `createdAt` for empty sessions.
+  lastActivityAt: number;
+}
+
+export interface SessionCreateParams {
+  /// Optional initial title; defaults to "新对话". Auto-derivation from the
+  /// first user prompt happens on submit, only if title is still default.
+  title?: string;
+}
+
+export interface SessionCreateResult {
+  session: SessionListItem;
+}
+
+export type SessionListParams = Record<string, never>;
+
+export interface SessionListResult {
+  /// `null` only before the Shell has issued its bootstrap `session.create`.
+  activeId: string | null;
+  sessions: SessionListItem[];
+}
+
+export interface SessionActivateParams {
+  sessionId: string;
+}
+
+export interface SessionActivateResult {
+  /// Full snapshot of the activated session's conversation, ordered by
+  /// `startedAt` ascending. All statuses included (in-flight + terminal).
+  /// Display-only mirror fields (thinking) are NOT carried here — see
+  /// "Snapshot merge 契约" in docs/designs/session-management.md.
+  snapshot: ConversationTurnWire[];
+}
+
+export interface SessionCreatedNotificationParams {
+  session: SessionListItem;
+}
+
+export interface SessionActivatedNotificationParams {
+  sessionId: string;
+}
+
+export type SessionListChangedNotificationParams = Record<string, never>;

@@ -83,6 +83,12 @@ public final class NotchViewModel {
     /// rows in Settings no longer needs a hand-tuned constant.
     public var settingsContentHeight: CGFloat = 0
 
+    /// Measured natural height of SessionHistoryPanelView. Same content-driven
+    /// pattern as Settings: PreferenceKey reports the intrinsic height,
+    /// `notchOpenedSize` clamps it into [compactMin, max]; the inner
+    /// ScrollView takes over once the list exceeds the ceiling.
+    public var historyPanelContentHeight: CGFloat = 0
+
     /// Vertical chrome around the dynamic content inside OpenedPanelView:
     /// top safe inset + spacing(8) between history and composer + bottom
     /// padding(16). Kept here so `notchOpenedSize` can clamp the panel's
@@ -208,11 +214,27 @@ public final class NotchViewModel {
         return providerService.providers.contains { $0.id == id && $0.state == .ready }
     }
 
+    /// True iff the composer should accept input AND submit. Composes two
+    /// independent gates: the selected provider is authed, AND the session
+    /// bootstrap succeeded. Bootstrap failure is rare but fatal for the
+    /// agent loop — there's no active session to attach a turn to, so
+    /// submit would silently no-op without this guard.
+    public var composerSubmitEnabled: Bool {
+        guard selectedProviderReady else { return false }
+        return agentService.sessionStore.bootError == nil
+    }
+
     public var notchOpenedSize: CGSize {
         // Settings: drive the silhouette off the panel's measured intrinsic
         // height (same pattern as onboarding), so adding/removing rows just
         // flows through. Picker sub-pages exceeding the max ceiling let
         // their inner ScrollView take over.
+        // History panel: takes priority over Settings (the user opens history
+        // from the same opened-panel header strip; they aren't both visible).
+        if showHistory {
+            let h = min(max(historyPanelContentHeight, notchOpenedCompactMinHeight), notchOpenedMaxHeight)
+            return CGSize(width: notchOpenedWidth, height: h)
+        }
         if showSettings {
             let h = min(max(settingsContentHeight, notchOpenedCompactMinHeight), notchOpenedMaxHeight)
             return CGSize(width: notchOpenedWidth, height: h)
@@ -256,10 +278,14 @@ public final class NotchViewModel {
 
     public let senseStore: SenseStore
     public let agentService: AgentService
+    public let sessionService: SessionService
     public let providerService: ProviderService
     public let configService: ConfigService
     public let permissionsService: PermissionsService
     public let visualCapturePolicyStore: VisualCapturePolicyStore
+
+    /// History popup visibility — driven by the header history button.
+    public var showHistory: Bool = false
 
     /// Composer input state. Owned here (not by `ComposerCard`) so the
     /// rich text + chips survive notch close/reopen cycles — the panel
@@ -277,6 +303,7 @@ public final class NotchViewModel {
     public init(
         senseStore: SenseStore,
         agentService: AgentService,
+        sessionService: SessionService,
         providerService: ProviderService,
         configService: ConfigService,
         permissionsService: PermissionsService,
@@ -286,6 +313,7 @@ public final class NotchViewModel {
     ) {
         self.senseStore = senseStore
         self.agentService = agentService
+        self.sessionService = sessionService
         self.providerService = providerService
         self.configService = configService
         self.permissionsService = permissionsService
@@ -460,6 +488,7 @@ public final class NotchViewModel {
     public func notchClose() {
         status = .closed
         showSettings = false
+        showHistory = false
         broadcastStatus()
     }
 

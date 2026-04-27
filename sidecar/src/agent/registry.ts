@@ -47,5 +47,3 @@ export class TurnRegistry {
     return this.turns.size;
   }
 }
-
-export const turns = new TurnRegistry();

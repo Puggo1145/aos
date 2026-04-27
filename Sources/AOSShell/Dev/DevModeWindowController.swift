@@ -29,10 +29,12 @@ public extension Notification.Name {
 @MainActor
 public final class DevModeWindowController: NSObject, NSWindowDelegate {
     private let contextService: DevContextService
+    private weak var sessionStore: SessionStore?
     private var window: NSWindow?
 
-    public init(contextService: DevContextService) {
+    public init(contextService: DevContextService, sessionStore: SessionStore? = nil) {
         self.contextService = contextService
+        self.sessionStore = sessionStore
     }
 
     public func show() {
@@ -52,7 +54,7 @@ public final class DevModeWindowController: NSObject, NSWindowDelegate {
         win.center()
         win.delegate = self
         win.contentView = NSHostingView(
-            rootView: DevModePanelView(contextService: contextService)
+            rootView: DevModePanelView(contextService: contextService, sessionStore: sessionStore)
         )
         window = win
         win.makeKeyAndOrderFront(nil)

@@ -28,13 +28,25 @@ struct AgentServiceTests {
             inbound: inbound.fileHandleForReading,
             outbound: outbound.fileHandleForWriting
         )
-        return AgentService(rpc: rpc)
+        let session = SessionService(rpc: rpc)
+        let store = SessionStore(rpc: rpc, sessionService: session)
+        // Pre-adopt a bootstrap session id so the active-mirror projection
+        // (`s.status`, `s.turns`, ...) works without driving session.* RPCs.
+        store.adoptCreated(SessionListItem(
+            id: "S",
+            title: "test",
+            createdAt: 0,
+            turnCount: 0,
+            lastActivityAt: 0
+        ))
+        session.sessionStore = store
+        return AgentService(rpc: rpc, sessionStore: store)
     }
 
     @Test("tokens for unknown turn id are dropped")
     func tokensDroppedForStaleTurn() {
         let s = makeService()
-        s.handleToken(UITokenParams(turnId: "T1", delta: "hi"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "T1", delta: "hi"))
         #expect(s.turns.isEmpty)
     }
 
@@ -53,13 +65,13 @@ struct AgentServiceTests {
     func statusMapping() {
         let s = makeService()
         s._testTurnStarted(id: "T1")
-        s.handleStatus(UIStatusParams(turnId: "T1", status: .thinking))
+        s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T1", status: .thinking))
         #expect(s.status == .thinking)
         #expect(s.turns.last?.status == .thinking)
-        s.handleStatus(UIStatusParams(turnId: "T1", status: .toolCalling))
+        s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T1", status: .toolCalling))
         #expect(s.status == .working)
         #expect(s.turns.last?.status == .working)
-        s.handleStatus(UIStatusParams(turnId: "T1", status: .waitingInput))
+        s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T1", status: .waitingInput))
         #expect(s.status == .waiting)
         #expect(s.turns.last?.status == .waiting)
     }
@@ -68,7 +80,7 @@ struct AgentServiceTests {
     func doneRevert() async throws {
         let s = makeService()
         s._testTurnStarted(id: "T2")
-        s.handleStatus(UIStatusParams(turnId: "T2", status: .done))
+        s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T2", status: .done))
         #expect(s.status == .done)
         #expect(s.turns.last?.status == .done)
         try await Task.sleep(nanoseconds: 1_500_000_000)
@@ -85,7 +97,7 @@ struct AgentServiceTests {
     func errorRevert() async throws {
         let s = makeService()
         s._testTurnStarted(id: "T3")
-        s.handleError(UIErrorParams(turnId: "T3", code: -32003, message: "no auth"))
+        s.handleError(UIErrorParams(sessionId: "S", turnId: "T3", code: -32003, message: "no auth"))
         #expect(s.status == .error)
         #expect(s.turns.last?.errorMessage == "no auth")
         #expect(s.turns.last?.status == .error)
@@ -100,12 +112,12 @@ struct AgentServiceTests {
     func tokensAppend() {
         let s = makeService()
         s._testTurnStarted(id: "T4")
-        s.handleToken(UITokenParams(turnId: "T4", delta: "Hel"))
-        s.handleToken(UITokenParams(turnId: "T4", delta: "lo"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "T4", delta: "Hel"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "T4", delta: "lo"))
         #expect(s.turns.last?.reply == "Hello")
         // tokens for an unknown turn id drop on the floor; the current
         // turn's reply is unchanged.
-        s.handleToken(UITokenParams(turnId: "Tstale", delta: "X"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "Tstale", delta: "X"))
         #expect(s.turns.last?.reply == "Hello")
     }
 
@@ -113,9 +125,9 @@ struct AgentServiceTests {
     func multiTurnHistory() {
         let s = makeService()
         s._testTurnStarted(id: "T1", prompt: "first")
-        s.handleToken(UITokenParams(turnId: "T1", delta: "one"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "T1", delta: "one"))
         s._testTurnStarted(id: "T2", prompt: "second")
-        s.handleToken(UITokenParams(turnId: "T2", delta: "two"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "T2", delta: "two"))
         #expect(s.turns.count == 2)
         #expect(s.turns[0].reply == "one")
         #expect(s.turns[1].reply == "two")
@@ -125,9 +137,9 @@ struct AgentServiceTests {
     func conversationReset() {
         let s = makeService()
         s._testTurnStarted(id: "T1", prompt: "first")
-        s.handleToken(UITokenParams(turnId: "T1", delta: "one"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "T1", delta: "one"))
         #expect(s.turns.count == 1)
-        s.handleConversationReset()
+        s.handleConversationReset(ConversationResetParams(sessionId: "S"))
         #expect(s.turns.isEmpty)
         #expect(s.currentTurn == nil)
         #expect(s.status == .idle)
@@ -137,8 +149,8 @@ struct AgentServiceTests {
     func staleStatusAfterResetIgnored() {
         let s = makeService()
         s._testTurnStarted(id: "T1")
-        s.handleConversationReset()
-        s.handleStatus(UIStatusParams(turnId: "T1", status: .done))
+        s.handleConversationReset(ConversationResetParams(sessionId: "S"))
+        s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T1", status: .done))
         #expect(s.status == .idle)
         #expect(s.turns.isEmpty)
     }
@@ -147,8 +159,8 @@ struct AgentServiceTests {
     func staleErrorAfterResetIgnored() {
         let s = makeService()
         s._testTurnStarted(id: "T1")
-        s.handleConversationReset()
-        s.handleError(UIErrorParams(turnId: "T1", code: -32000, message: "late"))
+        s.handleConversationReset(ConversationResetParams(sessionId: "S"))
+        s.handleError(UIErrorParams(sessionId: "S", turnId: "T1", code: -32000, message: "late"))
         #expect(s.status == .idle)
         #expect(s.turns.isEmpty)
     }
@@ -165,8 +177,8 @@ struct AgentServiceTests {
     func thinkingDeltaAccumulates() {
         let s = makeService()
         s._testTurnStarted(id: "TH1")
-        s.handleThinking(UIThinkingParams(turnId: "TH1", kind: .delta, delta: "Considering "))
-        s.handleThinking(UIThinkingParams(turnId: "TH1", kind: .delta, delta: "the request…"))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH1", kind: .delta, delta: "Considering "))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH1", kind: .delta, delta: "the request…"))
         #expect(s.turns.last?.thinking == "Considering the request…")
         #expect(s.turns.last?.thinkingStartedAt != nil)
         #expect(s.turns.last?.thinkingEndedAt == nil)
@@ -176,14 +188,14 @@ struct AgentServiceTests {
     func thinkingEndStamps() {
         let s = makeService()
         s._testTurnStarted(id: "TH2")
-        s.handleThinking(UIThinkingParams(turnId: "TH2", kind: .delta, delta: "x"))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH2", kind: .delta, delta: "x"))
         let firstStart = s.turns.last?.thinkingStartedAt
-        s.handleThinking(UIThinkingParams(turnId: "TH2", kind: .end))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH2", kind: .end))
         let firstEnd = s.turns.last?.thinkingEndedAt
         #expect(firstEnd != nil)
         // A second end must not move the stamp — the lifecycle is a
         // one-shot transition, not a re-trigger.
-        s.handleThinking(UIThinkingParams(turnId: "TH2", kind: .end))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH2", kind: .end))
         #expect(s.turns.last?.thinkingEndedAt == firstEnd)
         #expect(s.turns.last?.thinkingStartedAt == firstStart)
     }
@@ -192,8 +204,8 @@ struct AgentServiceTests {
     func tokenDoesNotCloseThinking() {
         let s = makeService()
         s._testTurnStarted(id: "TH3")
-        s.handleThinking(UIThinkingParams(turnId: "TH3", kind: .delta, delta: "trace"))
-        s.handleToken(UITokenParams(turnId: "TH3", delta: "reply"))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH3", kind: .delta, delta: "trace"))
+        s.handleToken(UITokenParams(sessionId: "S", turnId: "TH3", delta: "reply"))
         // Reply accumulates as expected, but thinking remains open until the
         // sidecar emits `.end`.
         #expect(s.turns.last?.reply == "reply")
@@ -204,8 +216,8 @@ struct AgentServiceTests {
     func statusDoneDoesNotCloseThinking() {
         let s = makeService()
         s._testTurnStarted(id: "TH4")
-        s.handleThinking(UIThinkingParams(turnId: "TH4", kind: .delta, delta: "trace"))
-        s.handleStatus(UIStatusParams(turnId: "TH4", status: .done))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH4", kind: .delta, delta: "trace"))
+        s.handleStatus(UIStatusParams(sessionId: "S", turnId: "TH4", status: .done))
         #expect(s.turns.last?.thinkingEndedAt == nil)
     }
 
@@ -213,9 +225,9 @@ struct AgentServiceTests {
     func staleThinkingAfterResetIgnored() {
         let s = makeService()
         s._testTurnStarted(id: "TH5")
-        s.handleConversationReset()
-        s.handleThinking(UIThinkingParams(turnId: "TH5", kind: .delta, delta: "late"))
-        s.handleThinking(UIThinkingParams(turnId: "TH5", kind: .end))
+        s.handleConversationReset(ConversationResetParams(sessionId: "S"))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH5", kind: .delta, delta: "late"))
+        s.handleThinking(UIThinkingParams(sessionId: "S", turnId: "TH5", kind: .end))
         #expect(s.turns.isEmpty)
     }
 
@@ -251,7 +263,7 @@ struct AgentServiceTests {
         let huge = String(repeating: "x", count: 3 * 1024 * 1024)
         await s.submit(prompt: huge, citedContext: CitedContext())
         #expect(s.lastErrorMessage != nil)
-        s.handleConversationReset()
+        s.handleConversationReset(ConversationResetParams(sessionId: "S"))
         #expect(s.lastErrorMessage == nil)
     }
 }

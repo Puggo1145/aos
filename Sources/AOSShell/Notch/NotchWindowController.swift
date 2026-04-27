@@ -28,7 +28,7 @@ public final class NotchWindowController {
     private var viewModel: NotchViewModel?
     private var cancellables: Set<AnyCancellable> = []
 
-    public init(senseStore: SenseStore, agentService: AgentService, providerService: ProviderService, configService: ConfigService, permissionsService: PermissionsService, visualCapturePolicyStore: VisualCapturePolicyStore, screen: NSScreen) {
+    public init(senseStore: SenseStore, agentService: AgentService, sessionService: SessionService, providerService: ProviderService, configService: ConfigService, permissionsService: PermissionsService, visualCapturePolicyStore: VisualCapturePolicyStore, screen: NSScreen) {
         let screenFrame = screen.frame
         let notchSize = screen.notchSize
         let deviceNotchRect = Self.makeDeviceNotchRect(screen: screen, notchSize: notchSize)
@@ -36,6 +36,7 @@ public final class NotchWindowController {
         let viewModel = NotchViewModel(
             senseStore: senseStore,
             agentService: agentService,
+            sessionService: sessionService,
             providerService: providerService,
             configService: configService,
             permissionsService: permissionsService,

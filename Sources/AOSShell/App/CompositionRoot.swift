@@ -28,6 +28,7 @@ public final class CompositionRoot {
     public let sidecarProcess: SidecarProcess
     public private(set) var rpcClient: RPCClient?
     public private(set) var agentService: AgentService?
+    public private(set) var sessionService: SessionService?
     public private(set) var providerService: ProviderService?
     public private(set) var configService: ConfigService?
     public private(set) var devContextService: DevContextService?
@@ -39,6 +40,12 @@ public final class CompositionRoot {
     /// bun missing). The OpenedPanelView reads `agentService.lastErrorMessage`
     /// for run-time errors; this property is for boot-time diagnostics.
     public private(set) var fatalBootError: String?
+
+    /// Bootstrap session.create failure — distinct from `fatalBootError`
+    /// because the sidecar handshake succeeded; only the initial session
+    /// allocation failed. The composer uses this to disable input + show
+    /// a precise message rather than silently no-op'ing on submit.
+    public private(set) var sessionBootError: String?
 
     public init() {
         self.permissionsService = PermissionsService()
@@ -80,7 +87,11 @@ public final class CompositionRoot {
         self.providerService = provider
         let config = ConfigService(rpc: client)
         self.configService = config
-        let agent = AgentService(rpc: client)
+        let session = SessionService(rpc: client)
+        self.sessionService = session
+        let store = SessionStore(rpc: client, sessionService: session)
+        session.sessionStore = store
+        let agent = AgentService(rpc: client, sessionStore: store)
         self.agentService = agent
 
         // Dev Mode is purely observational: the service subscribes to
@@ -89,7 +100,7 @@ public final class CompositionRoot {
         // NotificationCenter so the notch view tree stays unaware of it.
         let devContext = DevContextService(rpc: client)
         self.devContextService = devContext
-        let devWindow = DevModeWindowController(contextService: devContext)
+        let devWindow = DevModeWindowController(contextService: devContext, sessionStore: store)
         self.devModeWindowController = devWindow
         self.devModeOpenObserver = NotificationCenter.default.addObserver(
             forName: .aosOpenDevMode,
@@ -119,7 +130,27 @@ public final class CompositionRoot {
             return
         }
 
-        // 6. After handshake: refresh provider status so the onboard panel
+        // 6. Bootstrap session: explicit `session.create` per
+        //    docs/designs/session-management.md — manager starts empty so
+        //    every `agent.*` call must carry a sessionId. `SessionService.create`
+        //    drives `SessionStore.adoptCreated` from the response, atomically
+        //    flipping `activeId` so the rest of boot — and any UI already
+        //    mounted in step 4 — observes the active session before the next
+        //    async hop. Failure here is recorded as `sessionBootError` so the
+        //    composer can disable input and surface a precise message instead
+        //    of pretending submit will work.
+        do {
+            _ = try await session.create()
+        } catch {
+            FileHandle.standardError.write(
+                Data("[shell] session.create bootstrap failed: \(error)\n".utf8)
+            )
+            let msg = "Session initialization failed: \(error.localizedDescription). Restart AOS to retry."
+            sessionBootError = msg
+            store.bootError = msg
+        }
+
+        // 7. After handshake: refresh provider status so the onboard panel
         //    can flip to either the "ready" branch (input panel) or the
         //    actual onboard cards. Failure is logged only — UI stays on the
         //    loading affordance, which is the right signal in that case.
@@ -129,7 +160,7 @@ public final class CompositionRoot {
         async let configRefresh: () = config.refresh()
         _ = await (providerRefresh, configRefresh)
 
-        // 7. Start global event monitors (closed/popping/opened state machine).
+        // 8. Start global event monitors (closed/popping/opened state machine).
         EventMonitors.shared.start()
     }
 
@@ -156,6 +187,7 @@ public final class CompositionRoot {
             return
         }
         guard let agent = agentService,
+              let session = sessionService,
               let provider = providerService,
               let config = configService else {
             // mountWindow may be called before agent/provider/config services are
@@ -166,6 +198,7 @@ public final class CompositionRoot {
         notchWindowController = NotchWindowController(
             senseStore: senseStore,
             agentService: agent,
+            sessionService: session,
             providerService: provider,
             configService: config,
             permissionsService: permissionsService,
@@ -190,6 +223,7 @@ public final class CompositionRoot {
         providerService = nil
         configService = nil
         agentService = nil
+        sessionService = nil
         sidecarProcess.terminate()
         senseStore.stop()
     }

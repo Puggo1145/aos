@@ -173,22 +173,34 @@ private func clipboardLabel(for clip: CitedClipboard) -> String {
 @MainActor
 @Observable
 public final class AgentService {
-    public private(set) var turns: [ConversationTurn] = []
-    public private(set) var currentTurn: String?
-    public private(set) var status: AgentStatus = .idle
-    /// Set when a submit-time failure occurs *before* a turn exists — for
-    /// example an outbound payload that exceeds the RPC line cap. Cleared on
-    /// the next successful submit or `resetSession()`. The Notch panel reads
-    /// this to surface a user-visible banner since there is no per-turn slot
-    /// to attach the message to in this case.
-    public private(set) var lastErrorMessage: String?
+    /// Per-session mirror registry. The active mirror's fields project onto
+    /// `turns / currentTurn / status / lastErrorMessage` so every existing UI
+    /// consumer keeps working without changes.
+    public let sessionStore: SessionStore
+
+    /// Active session view-projections. Reading any of these from SwiftUI
+    /// transitively observes the active mirror's properties via @Observable —
+    /// switching `sessionStore.activeId` re-runs the dependent views.
+    public var turns: [ConversationTurn] {
+        sessionStore.activeMirror?.turns ?? []
+    }
+    public var currentTurn: String? {
+        sessionStore.activeMirror?.currentTurn
+    }
+    public var status: AgentStatus {
+        sessionStore.activeMirror?.status ?? .idle
+    }
+    public var lastErrorMessage: String? {
+        sessionStore.activeMirror?.lastErrorMessage
+    }
+
+    public var currentSessionId: String? { sessionStore.activeId }
 
     private let rpc: RPCClient
-    private var doneRevertTask: Task<Void, Never>?
-    private var errorRevertTask: Task<Void, Never>?
 
-    public init(rpc: RPCClient) {
+    public init(rpc: RPCClient, sessionStore: SessionStore) {
         self.rpc = rpc
+        self.sessionStore = sessionStore
         registerHandlers()
     }
 
@@ -198,8 +210,8 @@ public final class AgentService {
             await self?.handleTurnStarted(params)
         }
         rpc.registerNotificationHandler(method: RPCMethod.conversationReset) {
-            [weak self] (_: ConversationResetParams) in
-            await self?.handleConversationReset()
+            [weak self] (params: ConversationResetParams) in
+            await self?.handleConversationReset(params)
         }
         rpc.registerNotificationHandler(method: RPCMethod.uiToken) { [weak self] (params: UITokenParams) in
             await self?.handleToken(params)
@@ -218,18 +230,35 @@ public final class AgentService {
     // MARK: - Public API
 
     public func submit(prompt: String, citedContext: CitedContext) async {
+        guard let sessionId = currentSessionId, let mirror = sessionStore.activeMirror else {
+            // Fail loudly: no active session means bootstrap `session.create`
+            // failed (or hasn't landed yet) and no agent loop is reachable.
+            // Surface a banner via the store's action-error channel so the
+            // composer stops looking like it accepted the submit. The UI also
+            // reads `sessionStore.bootError` and disables the input upstream;
+            // this is the defensive lower-bound in case a submit somehow
+            // races past that gate.
+            sessionStore.lastActionError = SessionActionError(
+                kind: .create,
+                message: sessionStore.bootError
+                    ?? "No active session. Restart AOS or wait for session bootstrap to complete.",
+                sessionId: nil
+            )
+            return
+        }
         let turnId = UUID().uuidString
         do {
             _ = try await rpc.request(
                 method: RPCMethod.agentSubmit,
                 params: AgentSubmitParams(
+                    sessionId: sessionId,
                     turnId: turnId,
                     prompt: prompt,
                     citedContext: citedContext
                 ),
                 as: AgentSubmitResult.self
             )
-            lastErrorMessage = nil
+            mirror.clearSubmitError()
             // ack only — the turn appears in `turns` once the sidecar
             // broadcasts `conversation.turnStarted`.
         } catch let RPCClientError.outboundPayloadTooLarge(_, bytes, limit) {
@@ -238,17 +267,13 @@ public final class AgentService {
             // the sidecar transport is unaffected. Surface a precise message
             // so the user knows to remove pasted content rather than retry
             // blindly.
-            lastErrorMessage = Self.formatPayloadTooLargeMessage(bytes: bytes, limit: limit)
-            status = .error
-            scheduleErrorRevert()
+            mirror.setSubmitError(Self.formatPayloadTooLargeMessage(bytes: bytes, limit: limit))
         } catch {
             // Transport / handler-level failure before the sidecar ever
             // registered the turn. Surface as a global error indicator
             // without inventing a synthetic turn (the sidecar wouldn't
             // know about it, so a turn here would diverge from history).
-            lastErrorMessage = nil
-            status = .error
-            scheduleErrorRevert()
+            mirror.setSubmitError(nil)
         }
     }
 
@@ -266,125 +291,54 @@ public final class AgentService {
     /// local clearing is intentionally avoided — keeping a single source of
     /// truth means the UI updates only when the sidecar confirms.
     public func resetSession() async {
+        guard let sessionId = currentSessionId else { return }
         _ = try? await rpc.request(
             method: RPCMethod.agentReset,
-            params: AgentResetParams(),
+            params: AgentResetParams(sessionId: sessionId),
             as: AgentResetResult.self
         )
     }
 
     public func cancel() async {
-        guard let turnId = currentTurn else { return }
+        guard let sessionId = currentSessionId, let turnId = currentTurn else { return }
         _ = try? await rpc.request(
             method: RPCMethod.agentCancel,
-            params: AgentCancelParams(turnId: turnId),
+            params: AgentCancelParams(sessionId: sessionId, turnId: turnId),
             as: AgentCancelResult.self
         )
     }
 
     // MARK: - Notification handlers
+    //
+    // Each handler routes by `sessionId` to the matching mirror in
+    // `sessionStore`. Inactive sessions still apply updates locally — the
+    // mirror is independent of which one is currently displayed — but the
+    // global `status` projection only reflects the active mirror.
 
     /// Visible to tests via `@testable import` so synthetic notifications can
     /// drive the state machine without a real RPCClient.
     internal func handleTurnStarted(_ p: ConversationTurnStartedParams) {
-        let snapshot = ContextSnapshot.from(citedContext: p.turn.citedContext)
-        let local = ConversationTurn(
-            id: p.turn.id,
-            prompt: p.turn.prompt,
-            context: snapshot,
-            reply: p.turn.reply,
-            status: AgentStatus.from(turnStatus: p.turn.status),
-            errorMessage: p.turn.errorMessage
-        )
-        // Defensive: if the sidecar reuses an id (it won't in normal flow),
-        // replace rather than duplicate.
-        if let existing = turns.firstIndex(where: { $0.id == local.id }) {
-            turns[existing] = local
-        } else {
-            turns.append(local)
-        }
-        currentTurn = p.turn.id
-        status = .thinking
-        cancelReverts()
+        sessionStore.mirror(for: p.sessionId).applyTurnStarted(p)
     }
 
-    internal func handleConversationReset() {
-        currentTurn = nil
-        turns = []
-        status = .idle
-        lastErrorMessage = nil
-        cancelReverts()
+    internal func handleConversationReset(_ p: ConversationResetParams) {
+        sessionStore.mirrors[p.sessionId]?.applyConversationReset()
     }
 
     internal func handleToken(_ p: UITokenParams) {
-        guard let idx = turns.lastIndex(where: { $0.id == p.turnId }) else { return }
-        turns[idx].reply.append(p.delta)
+        sessionStore.mirror(for: p.sessionId).applyToken(p)
     }
 
-    /// Tagged dispatch on the `ui.thinking` lifecycle. `.delta` accumulates
-    /// the trace and stamps `thinkingStartedAt` on first arrival; `.end`
-    /// stamps `thinkingEndedAt` exactly once. The Shell never infers either
-    /// transition from neighboring channels — the sidecar owns the timing.
     internal func handleThinking(_ p: UIThinkingParams) {
-        guard let idx = turns.lastIndex(where: { $0.id == p.turnId }) else { return }
-        switch p.kind {
-        case .delta:
-            // `UIThinkingParams`'s decoder rejects `.delta` without a delta
-            // string, so the force-unwrap here is the wire contract — a nil
-            // would have failed at decode and never reached this handler.
-            if turns[idx].thinkingStartedAt == nil {
-                turns[idx].thinkingStartedAt = Date()
-            }
-            turns[idx].thinking.append(p.delta!)
-        case .end:
-            if turns[idx].thinkingStartedAt != nil && turns[idx].thinkingEndedAt == nil {
-                turns[idx].thinkingEndedAt = Date()
-            }
-        }
+        sessionStore.mirror(for: p.sessionId).applyThinking(p)
     }
 
     internal func handleStatus(_ p: UIStatusParams) {
-        guard let idx = turns.lastIndex(where: { $0.id == p.turnId }) else { return }
-        let mapped = AgentStatus.from(uiStatus: p.status)
-        turns[idx].status = mapped
-        status = mapped
-        switch p.status {
-        case .done: scheduleDoneRevert()
-        default: cancelReverts()
-        }
+        sessionStore.mirror(for: p.sessionId).applyStatus(p)
     }
 
     internal func handleError(_ p: UIErrorParams) {
-        guard let idx = turns.lastIndex(where: { $0.id == p.turnId }) else { return }
-        turns[idx].status = .error
-        turns[idx].errorMessage = p.message
-        status = .error
-        scheduleErrorRevert()
-    }
-
-    private func scheduleDoneRevert() {
-        doneRevertTask?.cancel()
-        doneRevertTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled, let self else { return }
-            await MainActor.run { self.status = .idle }
-        }
-    }
-
-    private func scheduleErrorRevert() {
-        errorRevertTask?.cancel()
-        errorRevertTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard !Task.isCancelled, let self else { return }
-            await MainActor.run { self.status = .idle }
-        }
-    }
-
-    private func cancelReverts() {
-        doneRevertTask?.cancel()
-        errorRevertTask?.cancel()
-        doneRevertTask = nil
-        errorRevertTask = nil
+        sessionStore.mirror(for: p.sessionId).applyError(p)
     }
 
     // MARK: - Test seams
@@ -394,8 +348,9 @@ public final class AgentService {
     // helpers thinly wrap the production notification handlers so tests don't
     // have to construct `CitedContext` boilerplate by hand.
 
-    internal func _testTurnStarted(id: String, prompt: String = "") {
+    internal func _testTurnStarted(id: String, prompt: String = "", sessionId: String = "S") {
         handleTurnStarted(ConversationTurnStartedParams(
+            sessionId: sessionId,
             turn: ConversationTurnWire(
                 id: id,
                 prompt: prompt,

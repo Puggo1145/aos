@@ -94,6 +94,7 @@ struct OpenedPanelView: View {
         let bandHeight = topSafeInset
         let notchGap: CGFloat = 8
         return HStack(spacing: 0) {
+            // Left strip: gear (settings) flush against the notch.
             HStack {
                 Spacer(minLength: 0)
                 gearButton
@@ -104,9 +105,12 @@ struct OpenedPanelView: View {
             Spacer(minLength: 0)
                 .frame(width: viewModel.deviceNotchRect.width, height: bandHeight)
 
-            HStack {
+            // Right strip: "+" (new session) + history. "+" is closer to the
+            // notch so the eye reads "create" before "browse" L-to-R.
+            HStack(spacing: 6) {
                 newConversationButton
                     .padding(.leading, notchGap)
+                historyButton
                 Spacer(minLength: 0)
             }
             .frame(width: stripWidth, height: bandHeight)
@@ -125,12 +129,55 @@ struct OpenedPanelView: View {
 
     private var newConversationButton: some View {
         Button {
-            Task { await agentService.resetSession() }
+            // "+" starts a fresh in-process session (per design: the old one
+            // is preserved for the user to navigate back via history). The
+            // sidecar's `session.create` auto-activates; SessionService drives
+            // `SessionStore.adoptCreated` from the response so mirror+activeId
+            // flip atomically before SwiftUI reads them.
+            Task {
+                do {
+                    _ = try await viewModel.sessionService.create()
+                } catch {
+                    viewModel.agentService.sessionStore.setActionError(
+                        SessionActionError(
+                            kind: .create,
+                            message: "Failed to start a new conversation: \(error.localizedDescription)",
+                            sessionId: nil
+                        )
+                    )
+                }
+            }
         } label: {
             headerIcon("plus")
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text("New conversation"))
+    }
+
+    private var historyButton: some View {
+        Button {
+            // Refresh from sidecar before opening so turnCount/lastActivityAt
+            // are up to date. Flip `showHistory` regardless of refresh
+            // outcome — the panel renders the cached list and surfaces a
+            // banner via `sessionStore.lastActionError` if refresh failed.
+            Task {
+                let store = viewModel.agentService.sessionStore
+                do {
+                    _ = try await store.refreshList()
+                } catch {
+                    store.setActionError(SessionActionError(
+                        kind: .list,
+                        message: "Failed to refresh sessions: \(error.localizedDescription)",
+                        sessionId: nil
+                    ))
+                }
+                viewModel.showHistory = true
+            }
+        } label: {
+            headerIcon("clock.arrow.circlepath")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("Conversation history"))
     }
 
     private func headerIcon(_ systemName: String) -> some View {
@@ -150,6 +197,47 @@ struct OpenedPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             if hasSession {
                 history
+            }
+            // Boot-time session.create failure. The composer below is also
+            // disabled, but this banner is the precise reason — surfaces it
+            // ahead of the input so the user reads "why" before "what's
+            // greyed out".
+            if let msg = agentService.sessionStore.bootError, !msg.isEmpty {
+                Text(msg)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.red.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.red.opacity(0.12))
+                    )
+            }
+            // Session-action failures (create / activate / list refresh)
+            // surface here when no history panel is overlaid. Dismissable so
+            // a stale banner doesn't linger after the user moves on.
+            if let actionError = agentService.sessionStore.lastActionError {
+                HStack(alignment: .top, spacing: 6) {
+                    Text(actionError.message)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.red.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        agentService.sessionStore.setActionError(nil)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.red.opacity(0.12))
+                )
             }
             // Submit-time errors that have no per-turn slot (e.g. the
             // outbound payload exceeded the RPC line cap). Displayed above
@@ -195,8 +283,10 @@ struct OpenedPanelView: View {
         // against e.g. codex with no token, and the agent loop would just
         // bounce the request. Permission gaps don't disable the input here:
         // the user can still queue a prompt while granting access in Settings.
-        .disabled(!viewModel.selectedProviderReady)
-        .opacity(viewModel.selectedProviderReady ? 1.0 : 0.55)
+        // Also disabled when bootstrap session.create failed: there's no
+        // active session to attach a turn to and submit would no-op.
+        .disabled(!viewModel.composerSubmitEnabled)
+        .opacity(viewModel.composerSubmitEnabled ? 1.0 : 0.55)
         // Pin the composer to its natural vertical size so the parent
         // VStack's `maxHeight: .infinity` (needed for history) can't
         // stretch it. Without this, the inner NSTextView would accept

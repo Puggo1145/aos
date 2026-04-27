@@ -118,6 +118,12 @@ function directionOf(method: string): Direction {
       // dispatcher.notify("provider.status", ...) throws (request method
       // shouldn't be sent as a notification).
       return "both";
+    case "session":
+      // `session.*` is split per-method like `provider.*` / `dev.*`:
+      // create/list/activate are Shell→Bun requests; created/activated/
+      // listChanged are Bun→Shell notifications. The split is enforced
+      // via SESSION_METHOD_KINDS below.
+      return "both";
     default:
       // Unknown namespace: be conservative — treat as "no direction allowed".
       // Inbound: MethodNotFound; outbound: programmer error.
@@ -147,12 +153,25 @@ const DEV_METHOD_KINDS: Record<string, SplitMethodKind> = {
   "dev.context.changed": "notification",
 };
 
+/// Per-method direction within `session.*`. Same shape as the others; without
+/// this table sidecar emitting `session.created` would slip past direction
+/// enforcement and Shell calling `request("session.listChanged", …)` would
+/// silently succeed against a missing handler.
+const SESSION_METHOD_KINDS: Record<string, SplitMethodKind> = {
+  "session.create": "request",
+  "session.list": "request",
+  "session.activate": "request",
+  "session.created": "notification",
+  "session.activated": "notification",
+  "session.listChanged": "notification",
+};
+
 /// Look up a method's split kind across every `both`-direction namespace.
 /// Returns `undefined` when the namespace isn't split or the method isn't
 /// listed, in which case the existing namespace-level direction check is
 /// the only enforcement (matches today's `rpc.*` behavior).
 function splitKindOf(method: string): SplitMethodKind | undefined {
-  return PROVIDER_METHOD_KINDS[method] ?? DEV_METHOD_KINDS[method];
+  return PROVIDER_METHOD_KINDS[method] ?? DEV_METHOD_KINDS[method] ?? SESSION_METHOD_KINDS[method];
 }
 
 // ---------------------------------------------------------------------------

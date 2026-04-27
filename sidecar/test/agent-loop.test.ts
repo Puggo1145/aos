@@ -10,8 +10,8 @@ import { Dispatcher } from "../src/rpc/dispatcher";
 import { StdioTransport, type ByteSink, type ByteSource } from "../src/rpc/transport";
 import { registerAgentHandlers, setModelResolver, resetModelResolver } from "../src/agent/loop";
 import { ContextObserver, type DevContextSnapshot } from "../src/agent/context-observer";
-import { TurnRegistry } from "../src/agent/registry";
 import { Conversation } from "../src/agent/conversation";
+import { SessionManager } from "../src/agent/session/manager";
 import {
   registerApiProvider,
   unregisterApiProviders,
@@ -136,14 +136,24 @@ async function flush(ms = 30): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+/// Build a fresh SessionManager + bootstrap session and return the bits each
+/// test needs. Replaces the Stage-0 "construct Conversation+TurnRegistry by
+/// hand" pattern: per docs/designs/session-management.md the loop now reads
+/// per-session state from the manager, so tests must allocate one too.
+function setupSession() {
+  const manager = new SessionManager();
+  const session = manager.create();
+  return { manager, sessionId: session.id, convo: session.conversation };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 test("happy path: ack + turnStarted + thinking + tokens + done", async () => {
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model) => {
     const s = new AssistantMessageEventStream();
@@ -161,7 +171,7 @@ test("happy path: ack + turnStarted + thinking + tokens + done", async () => {
     jsonrpc: "2.0",
     id: 1,
     method: "agent.submit",
-    params: { turnId: "T1", prompt: "hi", citedContext: {} },
+    params: { sessionId, turnId: "T1", prompt: "hi", citedContext: {} },
   });
 
   await flush(80);
@@ -182,13 +192,13 @@ test("happy path: ack + turnStarted + thinking + tokens + done", async () => {
     reply: "",
     status: "thinking",
   });
-  expect(captured.notifications[1].params).toEqual({ turnId: "T1", status: "thinking" });
+  expect(captured.notifications[1].params).toEqual({ sessionId, turnId: "T1", status: "thinking" });
 
   const tokens = captured.notifications.filter((n) => n.method === "ui.token");
   expect(tokens.map((t) => t.params.delta).join("")).toBe("Hello, world");
 
   const last = captured.notifications.at(-1)!;
-  expect(last).toEqual({ method: "ui.status", params: { turnId: "T1", status: "done" } });
+  expect(last).toEqual({ method: "ui.status", params: { sessionId, turnId: "T1", status: "done" } });
 
   // Conversation now holds the completed turn with both the streamed reply
   // and the AssistantMessage stash needed to replay this turn into the next
@@ -205,8 +215,8 @@ test("thinking lifecycle: thinking_delta and thinking_end are forwarded as ui.th
   // forwarded as `kind: "end"`, and both must precede the first `ui.token`
   // so the Shell's reasoning affordance closes before the reply renders.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model) => {
     const s = new AssistantMessageEventStream();
@@ -222,14 +232,14 @@ test("thinking lifecycle: thinking_delta and thinking_end are forwarded as ui.th
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "TT", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "TT", prompt: "hi", citedContext: {} } });
   await flush(80);
 
   const thinking = captured.notifications.filter((n) => n.method === "ui.thinking");
   expect(thinking).toHaveLength(3);
-  expect(thinking[0].params).toEqual({ turnId: "TT", kind: "delta", delta: "Considering " });
-  expect(thinking[1].params).toEqual({ turnId: "TT", kind: "delta", delta: "the request…" });
-  expect(thinking[2].params).toEqual({ turnId: "TT", kind: "end" });
+  expect(thinking[0].params).toEqual({ sessionId, turnId: "TT", kind: "delta", delta: "Considering " });
+  expect(thinking[1].params).toEqual({ sessionId, turnId: "TT", kind: "delta", delta: "the request…" });
+  expect(thinking[2].params).toEqual({ sessionId, turnId: "TT", kind: "end" });
 
   // Ordering invariant: every ui.thinking precedes every ui.token.
   const lastThinkingIdx = captured.notifications
@@ -245,8 +255,8 @@ test("thinking lifecycle: error mid-thinking synthesizes a {kind:end} before ui.
   // The Shell no longer infers the close from `ui.error`, so the sidecar
   // must synthesize the end itself or the shimmer keeps animating.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model) => {
     const s = new AssistantMessageEventStream();
@@ -260,7 +270,7 @@ test("thinking lifecycle: error mid-thinking synthesizes a {kind:end} before ui.
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "TE1", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "TE1", prompt: "hi", citedContext: {} } });
   await flush(80);
 
   const events = captured.notifications.map((n) => ({ method: n.method, params: n.params }));
@@ -269,7 +279,7 @@ test("thinking lifecycle: error mid-thinking synthesizes a {kind:end} before ui.
     .map((e, i) => ({ e, i }))
     .filter(({ e }) => e.method === "ui.thinking")
     .at(-1)!.i;
-  expect(events[lastThinkingIdx].params).toEqual({ turnId: "TE1", kind: "end" });
+  expect(events[lastThinkingIdx].params).toEqual({ sessionId, turnId: "TE1", kind: "end" });
   const errorIdx = events.findIndex((e) => e.method === "ui.error");
   expect(errorIdx).toBeGreaterThan(lastThinkingIdx);
 });
@@ -279,8 +289,8 @@ test("thinking lifecycle: cancel mid-thinking synthesizes a {kind:end} before ui
   // done` from the natural-completion tail. The thinking block must close
   // before that done so the Shell's per-turn timer freezes correctly.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model, signal) => {
     const s = new AssistantMessageEventStream();
@@ -299,16 +309,16 @@ test("thinking lifecycle: cancel mid-thinking synthesizes a {kind:end} before ui
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "TC1", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "TC1", prompt: "hi", citedContext: {} } });
   await flush(30);
-  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.cancel", params: { turnId: "TC1" } });
+  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.cancel", params: { sessionId, turnId: "TC1" } });
   await flush(80);
 
   const thinking = captured.notifications.filter((n) => n.method === "ui.thinking");
   // delta + synthesized end
   expect(thinking).toHaveLength(2);
   expect(thinking[0].params).toMatchObject({ kind: "delta" });
-  expect(thinking[1].params).toEqual({ turnId: "TC1", kind: "end" });
+  expect(thinking[1].params).toEqual({ sessionId, turnId: "TC1", kind: "end" });
 
   const lastThinkingIdx = captured.notifications
     .map((n, i) => ({ n, i }))
@@ -324,8 +334,8 @@ test("thinking lifecycle: end is not duplicated when provider already sent think
   // Sanity: the synthesized end must not double-fire on the happy path
   // where the provider closes the block itself.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model) => {
     const s = new AssistantMessageEventStream();
@@ -340,7 +350,7 @@ test("thinking lifecycle: end is not duplicated when provider already sent think
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "TD1", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "TD1", prompt: "hi", citedContext: {} } });
   await flush(80);
 
   const ends = captured.notifications.filter(
@@ -351,8 +361,8 @@ test("thinking lifecycle: end is not duplicated when provider already sent think
 
 test("cancel path: agent.cancel aborts the stream and emits status done", async () => {
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   let abortFired = false;
   nextStream = (model, signal) => {
@@ -378,9 +388,9 @@ test("cancel path: agent.cancel aborts the stream and emits status done", async 
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "T2", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "T2", prompt: "hi", citedContext: {} } });
   await flush(30);
-  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.cancel", params: { turnId: "T2" } });
+  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.cancel", params: { sessionId, turnId: "T2" } });
   await flush(80);
 
   // agent.cancel ack: { cancelled: true }
@@ -409,8 +419,8 @@ test("error path: typed authInvalidated reason maps to permissionDenied", async 
   // provider MUST tag auth failures with `errorReason: "authInvalidated"`;
   // a free-text "401" in `errorMessage` no longer takes a special path.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model) => {
     const s = new AssistantMessageEventStream();
@@ -424,7 +434,7 @@ test("error path: typed authInvalidated reason maps to permissionDenied", async 
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "T3", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "T3", prompt: "hi", citedContext: {} } });
   await flush(60);
 
   const errs = captured.notifications.filter((n) => n.method === "ui.error");
@@ -450,8 +460,8 @@ test("error path: untyped errors fall through to internalError", async () => {
   // No regex tail anymore: a stream error without `errorReason` is plain
   // internalError. Providers that wrap auth must tag the typed reason.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   nextStream = (model) => {
     const s = new AssistantMessageEventStream();
@@ -463,7 +473,7 @@ test("error path: untyped errors fall through to internalError", async () => {
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "T4", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "T4", prompt: "hi", citedContext: {} } });
   await flush(60);
 
   const errs = captured.notifications.filter((n) => n.method === "ui.error");
@@ -474,8 +484,8 @@ test("error path: untyped errors fall through to internalError", async () => {
 
 test("conversation history: prior turn's user+assistant messages are replayed into the next request", async () => {
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   // Capture the messages array the streamSimple wrapper sees on each call so
   // we can prove the second turn carried turn 1's full history.
@@ -500,7 +510,7 @@ test("conversation history: prior turn's user+assistant messages are replayed in
     return original(model, signal);
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "T1", prompt: "first", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "T1", prompt: "first", citedContext: {} } });
   await flush(80);
 
   // Reset stream for turn 2 so it can finish its own done.
@@ -516,7 +526,7 @@ test("conversation history: prior turn's user+assistant messages are replayed in
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.submit", params: { turnId: "T2", prompt: "second", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.submit", params: { sessionId, turnId: "T2", prompt: "second", citedContext: {} } });
   await flush(80);
 
   // Turn 1 saw only its own user message.
@@ -538,14 +548,10 @@ test("dev context observer: terminal publish includes the assistant reply", asyn
   // `convo.markDone(...)`. Without it, Dev Mode would only ever see the
   // pre-call input snapshot (user message only) and miss the assistant turn.
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
   const observer = new ContextObserver();
 
-  registerAgentHandlers(dispatcher, {
-    registry: new TurnRegistry(),
-    conversation: convo,
-    contextObserver: observer,
-  });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager, contextObserver: observer });
   // `registerAgentHandlers` installs its own sink that forwards to the
   // dispatcher; read the published snapshots back from `dev.context.changed`
   // notifications rather than overriding that sink.
@@ -574,7 +580,7 @@ test("dev context observer: terminal publish includes the assistant reply", asyn
     jsonrpc: "2.0",
     id: 1,
     method: "agent.submit",
-    params: { turnId: "T1", prompt: "ping", citedContext: {} },
+    params: { sessionId, turnId: "T1", prompt: "ping", citedContext: {} },
   });
   await flush(80);
 
@@ -595,8 +601,8 @@ test("dev context observer: terminal publish includes the assistant reply", asyn
 
 test("agent.reset wipes conversation, aborts in-flight turn, and emits conversation.reset", async () => {
   const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
-  const convo = new Conversation();
-  registerAgentHandlers(dispatcher, { registry: new TurnRegistry(), conversation: convo });
+  const { manager, convo, sessionId } = setupSession();
+  registerAgentHandlers(dispatcher, { manager });
 
   let abortFired = false;
   nextStream = (model, signal) => {
@@ -616,11 +622,11 @@ test("agent.reset wipes conversation, aborts in-flight turn, and emits conversat
     return s;
   };
 
-  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { turnId: "T1", prompt: "hi", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId, turnId: "T1", prompt: "hi", citedContext: {} } });
   await flush(30);
   expect(convo.turns).toHaveLength(1);
 
-  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.reset", params: {} });
+  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.reset", params: { sessionId } });
   await flush(80);
 
   const resetResp = captured.responses.find((r) => r.id === 2);
@@ -628,4 +634,66 @@ test("agent.reset wipes conversation, aborts in-flight turn, and emits conversat
   expect(abortFired).toBe(true);
   expect(convo.turns).toEqual([]);
   expect(captured.notifications.find((n) => n.method === "conversation.reset")).toBeDefined();
+});
+
+test("multi-session: notifications carry the correct sessionId; reset of A does not affect B", async () => {
+  const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
+  const manager = new SessionManager();
+  const a = manager.create();
+  const b = manager.create();
+  registerAgentHandlers(dispatcher, { manager });
+
+  // Both sessions get a finite-but-async stream so submit ack doesn't race.
+  nextStream = (model) => {
+    const s = new AssistantMessageEventStream();
+    queueMicrotask(async () => {
+      const partial = fakeAssistantMessage(model);
+      s.push({ type: "text_delta", contentIndex: 0, delta: "x", partial });
+      s.push({ type: "done", reason: "stop", message: partial });
+      s.end();
+    });
+    return s;
+  };
+
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId: a.id, turnId: "TA", prompt: "from-a", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.submit", params: { sessionId: b.id, turnId: "TB", prompt: "from-b", citedContext: {} } });
+  await flush(120);
+
+  // Every ui.* / conversation.* notification routed by sessionId.
+  const aTokens = captured.notifications.filter((n) => n.params?.sessionId === a.id && n.method === "ui.token");
+  const bTokens = captured.notifications.filter((n) => n.params?.sessionId === b.id && n.method === "ui.token");
+  expect(aTokens.map((n) => n.params.turnId)).toEqual(["TA"]);
+  expect(bTokens.map((n) => n.params.turnId)).toEqual(["TB"]);
+  // Sessions don't share turnIds in their notifications.
+  expect(aTokens.find((n) => n.params.turnId === "TB")).toBeUndefined();
+  expect(bTokens.find((n) => n.params.turnId === "TA")).toBeUndefined();
+
+  // Reset A, B's conversation untouched.
+  pushInbound({ jsonrpc: "2.0", id: 3, method: "agent.reset", params: { sessionId: a.id } });
+  await flush(40);
+  expect(a.conversation.turns).toEqual([]);
+  expect(b.conversation.turns).toHaveLength(1);
+  expect(b.conversation.turns[0].id).toBe("TB");
+
+  // Reset notification carried A's sessionId.
+  const resetEvents = captured.notifications.filter((n) => n.method === "conversation.reset");
+  expect(resetEvents.map((n) => n.params.sessionId)).toContain(a.id);
+  expect(resetEvents.find((n) => n.params.sessionId === b.id)).toBeUndefined();
+});
+
+test("agent.submit / cancel / reset return unknownSession for an unknown sessionId", async () => {
+  const { dispatcher, captured, pushInbound } = makeCapturingDispatcher();
+  const manager = new SessionManager();
+  manager.create(); // an active session exists, but the request will pass a bogus id.
+  registerAgentHandlers(dispatcher, { manager });
+
+  pushInbound({ jsonrpc: "2.0", id: 1, method: "agent.submit", params: { sessionId: "sess_nope", turnId: "T1", prompt: "x", citedContext: {} } });
+  pushInbound({ jsonrpc: "2.0", id: 2, method: "agent.cancel", params: { sessionId: "sess_nope", turnId: "T1" } });
+  pushInbound({ jsonrpc: "2.0", id: 3, method: "agent.reset", params: { sessionId: "sess_nope" } });
+  await flush(40);
+
+  for (const id of [1, 2, 3]) {
+    const resp = captured.responses.find((r) => r.id === id);
+    expect(resp?.error?.code).toBe(RPCErrorCode.unknownSession);
+  }
 });

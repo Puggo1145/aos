@@ -6,10 +6,12 @@ import Foundation
 // are notifications keyed by `turnId`, driving streaming state in the Notch UI.
 
 public struct UITokenParams: Codable, Sendable, Equatable {
+    public let sessionId: String
     public let turnId: String
     public let delta: String
 
-    public init(turnId: String, delta: String) {
+    public init(sessionId: String, turnId: String, delta: String) {
+        self.sessionId = sessionId
         self.turnId = turnId
         self.delta = delta
     }
@@ -28,12 +30,14 @@ public struct UIThinkingParams: Codable, Sendable, Equatable {
         case end
     }
 
+    public let sessionId: String
     public let turnId: String
     public let kind: Kind
     /// Set iff `kind == .delta`. Omitted from the wire on `.end`.
     public let delta: String?
 
-    public init(turnId: String, kind: Kind, delta: String? = nil) {
+    public init(sessionId: String, turnId: String, kind: Kind, delta: String? = nil) {
+        self.sessionId = sessionId
         self.turnId = turnId
         self.kind = kind
         self.delta = delta
@@ -48,11 +52,12 @@ public struct UIThinkingParams: Codable, Sendable, Equatable {
     // propagate into downstream display state.
 
     private enum CodingKeys: String, CodingKey {
-        case turnId, kind, delta
+        case sessionId, turnId, kind, delta
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let sessionId = try c.decode(String.self, forKey: .sessionId)
         let turnId = try c.decode(String.self, forKey: .turnId)
         let kind = try c.decode(Kind.self, forKey: .kind)
         // Strict: presence of the `delta` *key* (including `delta: null`) is
@@ -71,7 +76,7 @@ public struct UIThinkingParams: Codable, Sendable, Equatable {
             // `decode(String.self, ...)` throws `valueNotFound` on explicit null
             // — exactly the failure we want for `{"kind":"delta","delta":null}`.
             let delta = try c.decode(String.self, forKey: .delta)
-            self.init(turnId: turnId, kind: .delta, delta: delta)
+            self.init(sessionId: sessionId, turnId: turnId, kind: .delta, delta: delta)
         case .end:
             guard !c.contains(.delta) else {
                 throw DecodingError.dataCorruptedError(
@@ -79,12 +84,13 @@ public struct UIThinkingParams: Codable, Sendable, Equatable {
                     debugDescription: "ui.thinking kind=end must not carry a 'delta' field"
                 )
             }
-            self.init(turnId: turnId, kind: .end, delta: nil)
+            self.init(sessionId: sessionId, turnId: turnId, kind: .end, delta: nil)
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(sessionId, forKey: .sessionId)
         try c.encode(turnId, forKey: .turnId)
         try c.encode(kind, forKey: .kind)
         switch kind {
@@ -118,22 +124,26 @@ public enum UIStatus: String, Codable, Sendable, Equatable, CaseIterable {
 }
 
 public struct UIStatusParams: Codable, Sendable, Equatable {
+    public let sessionId: String
     public let turnId: String
     public let status: UIStatus
 
-    public init(turnId: String, status: UIStatus) {
+    public init(sessionId: String, turnId: String, status: UIStatus) {
+        self.sessionId = sessionId
         self.turnId = turnId
         self.status = status
     }
 }
 
 public struct UIErrorParams: Codable, Sendable, Equatable {
+    public let sessionId: String
     public let turnId: String
     public let code: Int
     public let message: String
     public let data: JSONValue?
 
-    public init(turnId: String, code: Int, message: String, data: JSONValue? = nil) {
+    public init(sessionId: String, turnId: String, code: Int, message: String, data: JSONValue? = nil) {
+        self.sessionId = sessionId
         self.turnId = turnId
         self.code = code
         self.message = message

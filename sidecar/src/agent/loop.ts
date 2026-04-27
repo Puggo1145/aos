@@ -32,9 +32,10 @@ import {
   type AgentResetResult,
 } from "../rpc/rpc-types";
 import { Dispatcher, RPCMethodError } from "../rpc/dispatcher";
-import { turns, type TurnRegistry } from "./registry";
-import { conversation as defaultConversation, Conversation } from "./conversation";
+import { TurnRegistry } from "./registry";
+import { Conversation } from "./conversation";
 import { contextObserver as defaultContextObserver, ContextObserver } from "./context-observer";
+import { SessionManager } from "./session/manager";
 import { logger } from "../log";
 
 const SYSTEM_PROMPT = "You are AOS, an AI agent embedded in macOS via the notch UI. Be concise and helpful.";
@@ -109,20 +110,17 @@ export function pickErrorCode(msg: AssistantMessage): number {
 // ---------------------------------------------------------------------------
 
 export interface RegisterAgentOptions {
-  /// Override the registry (tests use a private one to avoid leaking state).
-  registry?: TurnRegistry;
-  /// Override the conversation store (tests inject a fresh instance so each
-  /// test starts from an empty history).
-  conversation?: Conversation;
-  /// Override the context observer used by Dev Mode. Tests can pass a fresh
-  /// instance to assert what was published without touching the singleton.
+  /// SessionManager owning the per-session Conversation + TurnRegistry pair.
+  /// Required. In production, `src/index.ts` constructs a fresh one; tests
+  /// inject their own and pre-create as many sessions as needed.
+  manager: SessionManager;
+  /// Override the context observer used by Dev Mode.
   contextObserver?: ContextObserver;
 }
 
-export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgentOptions = {}): void {
-  const reg = opts.registry ?? turns;
-  const convo = opts.conversation ?? defaultConversation;
+export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgentOptions): void {
   const observer = opts.contextObserver ?? defaultContextObserver;
+  const manager = opts.manager;
 
   // Wire the observer's sink to the dispatcher. The agent loop only ever
   // calls `observer.publish(...)`; this is the single edge where the
@@ -135,12 +133,33 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
     return { snapshot: observer.latest() };
   });
 
-  dispatcher.registerRequest(RPCMethod.agentSubmit, async (raw): Promise<AgentSubmitResult> => {
-    const params = raw as AgentSubmitParams;
-    const { turnId, prompt, citedContext } = params;
-    if (typeof turnId !== "string" || typeof prompt !== "string" || citedContext === undefined) {
-      throw new RPCMethodError(RPCErrorCode.invalidParams, "agent.submit requires { turnId, prompt, citedContext }");
+  /// Resolve a sessionId to its Session, or throw `unknownSession`. Used by
+  /// every `agent.*` handler — none of them fall back to `manager.activeId`
+  /// per the design's "active session 显式投影到 wire" principle.
+  const resolveSession = (sessionId: unknown) => {
+    if (typeof sessionId !== "string") {
+      throw new RPCMethodError(RPCErrorCode.invalidParams, "missing or non-string sessionId");
     }
+    const s = manager.get(sessionId);
+    if (!s) {
+      throw new RPCMethodError(RPCErrorCode.unknownSession, `unknown sessionId: ${sessionId}`);
+    }
+    return s;
+  };
+
+  dispatcher.registerRequest(RPCMethod.agentSubmit, async (raw): Promise<AgentSubmitResult> => {
+    const params = (raw ?? {}) as AgentSubmitParams;
+    const { sessionId, turnId, prompt, citedContext } = params;
+    if (typeof turnId !== "string" || typeof prompt !== "string" || citedContext === undefined) {
+      throw new RPCMethodError(
+        RPCErrorCode.invalidParams,
+        "agent.submit requires { sessionId, turnId, prompt, citedContext }",
+      );
+    }
+    const session = resolveSession(sessionId);
+    const convo = session.conversation;
+    const reg = session.turns;
+
     if (reg.get(turnId)) {
       throw new RPCMethodError(RPCErrorCode.invalidRequest, `turnId already active: ${turnId}`);
     }
@@ -150,37 +169,58 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
     // in the store. The notification is fired here too — it is part of the
     // submit ack contract, not an out-of-band signal.
     const turn = convo.startTurn({ id: turnId, prompt, citedContext });
-    dispatcher.notify(RPCMethod.conversationTurnStarted, { turn: Conversation.toWire(turn) });
+    dispatcher.notify(RPCMethod.conversationTurnStarted, {
+      sessionId: session.id,
+      turn: Conversation.toWire(turn),
+    });
+
+    // First-prompt title derivation. listChanged covers both the title flip
+    // and the lastActivityAt advance from createdAt → turn.startedAt.
+    const titleChanged = manager.maybeDeriveTitle(session.id, prompt);
+    if (titleChanged || convo.turns.length === 1) {
+      manager.notifyListChanged();
+    }
 
     const controller = reg.add(turnId);
 
     // Detached: ack must return inside agent.submit's 1s budget.
-    void runTurn(dispatcher, convo, { turnId, signal: controller.signal, observer })
-      .catch((err) => logger.error("agent loop fatal", { turnId, err: String(err) }))
+    void runTurn(dispatcher, convo, {
+      sessionId: session.id,
+      turnId,
+      signal: controller.signal,
+      observer,
+      onDone: () => manager.notifyListChanged(),
+    })
+      .catch((err) => logger.error("agent loop fatal", { sessionId: session.id, turnId, err: String(err) }))
       .finally(() => reg.remove(turnId));
 
     return { accepted: true };
   });
 
   dispatcher.registerRequest(RPCMethod.agentCancel, async (raw): Promise<AgentCancelResult> => {
-    const { turnId } = raw as AgentCancelParams;
+    const { sessionId, turnId } = (raw ?? {}) as AgentCancelParams;
     if (typeof turnId !== "string") {
-      throw new RPCMethodError(RPCErrorCode.invalidParams, "agent.cancel requires { turnId }");
+      throw new RPCMethodError(RPCErrorCode.invalidParams, "agent.cancel requires { sessionId, turnId }");
     }
-    const cancelled = reg.abort(turnId);
+    const session = resolveSession(sessionId);
+    const cancelled = session.turns.abort(turnId);
     if (cancelled) {
       // Mark the turn cancelled so future `llmMessages()` builds skip it.
       // The boolean return is an `unknown turnId` no-op — only happens if
       // the turn was concurrently reset, which is a tolerated race.
-      convo.setStatus(turnId, "cancelled");
+      session.conversation.setStatus(turnId, "cancelled");
     }
     return { cancelled };
   });
 
-  dispatcher.registerRequest(RPCMethod.agentReset, async (): Promise<AgentResetResult> => {
-    reg.abortAll();
-    convo.reset();
-    dispatcher.notify(RPCMethod.conversationReset, {});
+  dispatcher.registerRequest(RPCMethod.agentReset, async (raw): Promise<AgentResetResult> => {
+    const { sessionId } = (raw ?? {}) as AgentResetParams;
+    const session = resolveSession(sessionId);
+    session.turns.abortAll();
+    session.conversation.reset();
+    dispatcher.notify(RPCMethod.conversationReset, { sessionId: session.id });
+    // turnCount/lastActivityAt regress; surface to history list.
+    manager.notifyListChanged();
     return { ok: true };
   });
 }
@@ -192,12 +232,22 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
 export async function runTurn(
   dispatcher: Dispatcher,
   convo: Conversation,
-  params: { turnId: string; signal: AbortSignal; observer?: ContextObserver },
+  params: {
+    sessionId: string;
+    turnId: string;
+    signal: AbortSignal;
+    observer?: ContextObserver;
+    /// Called when the turn lands in a terminal `done` state (post-`markDone`).
+    /// Loop uses this to fire `session.listChanged` (turnCount + lastActivityAt
+    /// changed). Errored / cancelled paths do not increment turnCount, so they
+    /// don't invoke this hook.
+    onDone?: () => void;
+  },
 ): Promise<void> {
-  const { turnId, signal } = params;
+  const { sessionId, turnId, signal } = params;
   const observer = params.observer ?? defaultContextObserver;
 
-  dispatcher.notify(RPCMethod.uiStatus, { turnId, status: "thinking" });
+  dispatcher.notify(RPCMethod.uiStatus, { sessionId, turnId, status: "thinking" });
 
   let model: Model<Api>;
   let cfg: ReturnType<typeof readUserConfig>;
@@ -214,6 +264,7 @@ export async function runTurn(
     logger.error("model/config resolution failed", { turnId, err: String(err) });
     convo.setError(turnId, RPCErrorCode.internalError, message);
     dispatcher.notify(RPCMethod.uiError, {
+      sessionId,
       turnId,
       code: RPCErrorCode.internalError,
       message,
@@ -242,7 +293,7 @@ export async function runTurn(
   const closeThinkingIfOpen = (): void => {
     if (!thinkingOpen) return;
     thinkingOpen = false;
-    dispatcher.notify(RPCMethod.uiThinking, { turnId, kind: "end" });
+    dispatcher.notify(RPCMethod.uiThinking, { sessionId, turnId, kind: "end" });
   };
 
   try {
@@ -259,6 +310,7 @@ export async function runTurn(
     // — observation must never break the turn.
     observer.publish({
       capturedAt: Date.now(),
+      sessionId,
       turnId,
       modelId: model.id,
       providerId: model.provider,
@@ -286,6 +338,7 @@ export async function runTurn(
         // it anyway). The Shell renders these in a separate affordance.
         thinkingOpen = true;
         dispatcher.notify(RPCMethod.uiThinking, {
+          sessionId,
           turnId,
           kind: "delta",
           delta: ev.delta,
@@ -304,7 +357,7 @@ export async function runTurn(
         // a `ui.token` for a turn the Shell mirror has already dropped, or
         // the two views diverge.
         if (convo.appendDelta(turnId, ev.delta)) {
-          dispatcher.notify(RPCMethod.uiToken, { turnId, delta: ev.delta });
+          dispatcher.notify(RPCMethod.uiToken, { sessionId, turnId, delta: ev.delta });
         }
       } else if (ev.type === "done") {
         final = ev.message;
@@ -315,7 +368,7 @@ export async function runTurn(
         // `thinkingEndedAt` on this and stops the shimmer.
         closeThinkingIfOpen();
         if (convo.setError(turnId, code, message)) {
-          dispatcher.notify(RPCMethod.uiError, { turnId, code, message });
+          dispatcher.notify(RPCMethod.uiError, { sessionId, turnId, code, message });
           // Project typed auth invalidation to provider.statusChanged so the
           // Shell ProviderService flips to unauthenticated and the next
           // opened-state shows the onboard panel. Per docs/plans/onboarding.md
@@ -341,6 +394,7 @@ export async function runTurn(
       closeThinkingIfOpen();
       if (convo.setError(turnId, RPCErrorCode.agentContextOverflow, "Context too long")) {
         dispatcher.notify(RPCMethod.uiError, {
+          sessionId,
           turnId,
           code: RPCErrorCode.agentContextOverflow,
           message: "Context too long",
@@ -356,12 +410,13 @@ export async function runTurn(
     //     llmMessages() skips it. We still emit `ui.status done` so the
     //     Notch UI reaches the same terminal emoji state.
     if (final && !signal.aborted) {
-      convo.markDone(turnId, final);
+      const ok = convo.markDone(turnId, final);
       // Re-publish so Dev Mode reflects the full turn (user + assistant)
       // instead of frozen pre-call input. Pull fresh `llmMessages()` so
       // the snapshot includes the just-stored AssistantMessage.
       observer.publish({
         capturedAt: Date.now(),
+        sessionId,
         turnId,
         modelId: model.id,
         providerId: model.provider,
@@ -369,6 +424,9 @@ export async function runTurn(
         systemPrompt: SYSTEM_PROMPT,
         messagesJson: ContextObserver.renderMessages(convo.llmMessages()),
       });
+      // turnCount + lastActivityAt advanced — surface to the history list.
+      // Skip when `markDone` returned false (turn was reset/cancelled mid-flight).
+      if (ok) params.onDone?.();
     }
     // `ui.status done` is the terminal signal regardless of whether the turn
     // is still in the conversation — Shell may want to clear its emoji even
@@ -376,13 +434,14 @@ export async function runTurn(
     // also land here (loop break on `signal.aborted`) — closing the thinking
     // block first keeps the cancel-mid-thinking UX consistent with errors.
     closeThinkingIfOpen();
-    dispatcher.notify(RPCMethod.uiStatus, { turnId, status: "done" });
+    dispatcher.notify(RPCMethod.uiStatus, { sessionId, turnId, status: "done" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error("runTurn failed", { turnId, err: String(err) });
     closeThinkingIfOpen();
     if (convo.setError(turnId, RPCErrorCode.internalError, message)) {
       dispatcher.notify(RPCMethod.uiError, {
+        sessionId,
         turnId,
         code: RPCErrorCode.internalError,
         message,

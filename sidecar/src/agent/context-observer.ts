@@ -28,6 +28,11 @@ import type { Message } from "../llm/types";
 export interface DevContextSnapshot {
   /// Milliseconds since epoch when this snapshot was captured.
   capturedAt: number;
+  /// Session that issued this turn. Per docs/designs/session-management.md
+  /// `ContextObserver` keeps a *global latest* (not per-session) — Dev Mode
+  /// renders the sessionId + an "active?" badge so background turns are
+  /// distinguishable.
+  sessionId: string;
   turnId: string;
   modelId: string;
   providerId: string;

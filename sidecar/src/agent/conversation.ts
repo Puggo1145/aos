@@ -15,10 +15,9 @@
 //   that emission must NOT be promoted to a `ui.*` notification. Any other
 //   failure (programmer error, malformed input) propagates as a thrown error.
 //
-// Multi-session support is intentionally not built yet: we have one agent
-// loop, one notch, one chat. When sessions land, this becomes keyed by
-// sessionId; the public surface (turns, mutators, llmMessages) is designed
-// so that switch is mechanical.
+// Each Session owns its own Conversation instance (see agent/session/). This
+// module no longer exports a default singleton — the public surface (turns,
+// mutators, llmMessages, toWire) stayed identical when multi-session landed.
 
 import type { Message, AssistantMessage } from "../llm/types";
 import type {
@@ -166,6 +165,3 @@ export class Conversation {
   }
 }
 
-/// Singleton: AOS Stage 0 has exactly one conversation. Tests can construct
-/// throwaway `Conversation` instances and inject them via the loop's options.
-export const conversation = new Conversation();

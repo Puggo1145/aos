@@ -3,6 +3,7 @@ import Foundation
 import CoreGraphics
 import AppKit
 import AOSOSSenseKit
+import AOSRPCSchema
 @testable import AOSShell
 
 // MARK: - NotchTrayDismissalTests
@@ -33,12 +34,22 @@ struct NotchTrayDismissalTests {
         let permissions = PermissionsService()
         let registry = AdapterRegistry()
         let sense = SenseStore(permissionsService: permissions, registry: registry)
-        let agent = AgentService(rpc: rpc)
+        let session = SessionService(rpc: rpc)
+        let store = SessionStore(rpc: rpc, sessionService: session)
+        store.adoptCreated(SessionListItem(
+            id: "S",
+            title: "test",
+            createdAt: 0,
+            turnCount: 0,
+            lastActivityAt: 0
+        ))
+        let agent = AgentService(rpc: rpc, sessionStore: store)
         let provider = ProviderService(rpc: rpc)
         let config = ConfigService(rpc: rpc)
         return NotchViewModel(
             senseStore: sense,
             agentService: agent,
+            sessionService: session,
             providerService: provider,
             configService: config,
             permissionsService: permissions,

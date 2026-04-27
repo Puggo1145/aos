@@ -7,11 +7,13 @@ import Foundation
 // projection of `SenseContext`. `agent.cancel` is keyed by `turnId`.
 
 public struct AgentSubmitParams: Codable, Sendable, Equatable {
+    public let sessionId: String
     public let turnId: String
     public let prompt: String
     public let citedContext: CitedContext
 
-    public init(turnId: String, prompt: String, citedContext: CitedContext) {
+    public init(sessionId: String, turnId: String, prompt: String, citedContext: CitedContext) {
+        self.sessionId = sessionId
         self.turnId = turnId
         self.prompt = prompt
         self.citedContext = citedContext
@@ -27,9 +29,11 @@ public struct AgentSubmitResult: Codable, Sendable, Equatable {
 }
 
 public struct AgentCancelParams: Codable, Sendable, Equatable {
+    public let sessionId: String
     public let turnId: String
 
-    public init(turnId: String) {
+    public init(sessionId: String, turnId: String) {
+        self.sessionId = sessionId
         self.turnId = turnId
     }
 }
@@ -44,13 +48,17 @@ public struct AgentCancelResult: Codable, Sendable, Equatable {
 
 // MARK: - agent.reset
 //
-// `agent.reset` clears the entire conversation kept in the sidecar (cancels
-// any in-flight turn first). The sidecar follows up with a
-// `conversation.reset` notification so all observers can drop their mirrors.
-// Empty-params are encoded as `{}`.
+// `agent.reset` clears the conversation of ONE session (cancels its in-flight
+// turn first). The sidecar follows up with `conversation.reset { sessionId }`
+// so observers drop the mirror for that session, plus `session.listChanged`
+// so the history list reflects the zeroed turnCount.
 
 public struct AgentResetParams: Codable, Sendable, Equatable {
-    public init() {}
+    public let sessionId: String
+
+    public init(sessionId: String) {
+        self.sessionId = sessionId
+    }
 }
 
 public struct AgentResetResult: Codable, Sendable, Equatable {
@@ -115,15 +123,21 @@ public struct ConversationTurnWire: Codable, Sendable, Equatable {
 }
 
 public struct ConversationTurnStartedParams: Codable, Sendable, Equatable {
+    public let sessionId: String
     public let turn: ConversationTurnWire
 
-    public init(turn: ConversationTurnWire) {
+    public init(sessionId: String, turn: ConversationTurnWire) {
+        self.sessionId = sessionId
         self.turn = turn
     }
 }
 
 public struct ConversationResetParams: Codable, Sendable, Equatable {
-    public init() {}
+    public let sessionId: String
+
+    public init(sessionId: String) {
+        self.sessionId = sessionId
+    }
 }
 
 // MARK: - CitedContext

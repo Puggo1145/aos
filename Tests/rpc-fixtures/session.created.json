@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"session.created","params":{"session":{"createdAt":1714000000000,"id":"sess_01abcdef01234567","lastActivityAt":1714000000000,"title":"新对话","turnCount":0}}}

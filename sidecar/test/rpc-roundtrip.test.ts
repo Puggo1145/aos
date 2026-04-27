@@ -43,6 +43,12 @@ import {
   type ProviderLogoutParams,
   type DevContextGetParams,
   type DevContextChangedParams,
+  type SessionCreateParams,
+  type SessionListParams,
+  type SessionActivateParams,
+  type SessionCreatedNotificationParams,
+  type SessionActivatedNotificationParams,
+  type SessionListChangedNotificationParams,
 } from "../src/rpc/rpc-types";
 
 // Resolve repo root by walking up from this test file.
@@ -299,6 +305,51 @@ test("dev.context.changed fixture roundtrips byte-equal", () => {
   expect(typeof note.params.snapshot.messagesJson).toBe("string");
 });
 
-test("AOS_PROTOCOL_VERSION equals 1.0.0", () => {
-  expect(AOS_PROTOCOL_VERSION).toBe("1.0.0");
+test("session.create fixture roundtrips byte-equal", () => {
+  assertRoundtrip("session.create.json");
+  const { parsed } = loadFixture("session.create.json");
+  const req = parsed as RPCRequest<SessionCreateParams>;
+  expect(req.method).toBe(RPCMethod.sessionCreate);
+});
+
+test("session.list fixture roundtrips byte-equal", () => {
+  assertRoundtrip("session.list.json");
+  const { parsed } = loadFixture("session.list.json");
+  const req = parsed as RPCRequest<SessionListParams>;
+  expect(req.method).toBe(RPCMethod.sessionList);
+});
+
+test("session.activate fixture roundtrips byte-equal", () => {
+  assertRoundtrip("session.activate.json");
+  const { parsed } = loadFixture("session.activate.json");
+  const req = parsed as RPCRequest<SessionActivateParams>;
+  expect(req.method).toBe(RPCMethod.sessionActivate);
+  expect(typeof req.params.sessionId).toBe("string");
+});
+
+test("session.created fixture roundtrips byte-equal", () => {
+  assertRoundtrip("session.created.json");
+  const { parsed } = loadFixture("session.created.json");
+  const note = parsed as RPCNotification<SessionCreatedNotificationParams>;
+  expect(note.method).toBe(RPCMethod.sessionCreated);
+  expect(typeof note.params.session.id).toBe("string");
+  expect(note.params.session.turnCount).toBe(0);
+});
+
+test("session.activated fixture roundtrips byte-equal", () => {
+  assertRoundtrip("session.activated.json");
+  const { parsed } = loadFixture("session.activated.json");
+  const note = parsed as RPCNotification<SessionActivatedNotificationParams>;
+  expect(note.method).toBe(RPCMethod.sessionActivated);
+});
+
+test("session.listChanged fixture roundtrips byte-equal", () => {
+  assertRoundtrip("session.listChanged.json");
+  const { parsed } = loadFixture("session.listChanged.json");
+  const note = parsed as RPCNotification<SessionListChangedNotificationParams>;
+  expect(note.method).toBe(RPCMethod.sessionListChanged);
+});
+
+test("AOS_PROTOCOL_VERSION equals 2.0.0", () => {
+  expect(AOS_PROTOCOL_VERSION).toBe("2.0.0");
 });

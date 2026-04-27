@@ -10,6 +10,7 @@ import AOSRPCSchema
 
 struct DevModePanelView: View {
     let contextService: DevContextService
+    var sessionStore: SessionStore?
 
     @State private var selected: Section = .context
 
@@ -28,7 +29,7 @@ struct DevModePanelView: View {
         } detail: {
             switch selected {
             case .context:
-                DevContextSectionView(service: contextService)
+                DevContextSectionView(service: contextService, sessionStore: sessionStore)
             }
         }
         .task {
@@ -54,6 +55,11 @@ struct DevModePanelView: View {
 
 struct DevContextSectionView: View {
     let service: DevContextService
+    /// Optional — when present, lets the header render a badge indicating
+    /// whether the snapshot's session is the one the user is currently
+    /// looking at. Per design, Dev Mode shows global latest; the badge is
+    /// purely informational.
+    var sessionStore: SessionStore?
 
     var body: some View {
         Group {
@@ -141,11 +147,34 @@ struct DevContextSectionView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            Text("turn: \(snap.turnId)")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+            HStack(spacing: 6) {
+                Text("session: \(snap.sessionId)")
+                Text(activeBadge(for: snap.sessionId))
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(isActive(snap.sessionId) ? Color.green.opacity(0.18) : Color.gray.opacity(0.18))
+                    )
+                Spacer()
+                Text("turn: \(snap.turnId)")
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
         }
+    }
+
+    /// Per docs/designs/session-management.md: Dev Mode shows the *global
+    /// latest* LLM input. The active badge surfaces whether that input came
+    /// from the currently-foregrounded session or a background one.
+    private func isActive(_ sessionId: String) -> Bool {
+        sessionStore?.activeId == sessionId
+    }
+
+    private func activeBadge(for sessionId: String) -> String {
+        isActive(sessionId) ? "active" : "background"
     }
 
     private func section(title: String, body: String) -> some View {

@@ -12,6 +12,8 @@
 import { StdioTransport } from "./rpc/transport";
 import { Dispatcher } from "./rpc/dispatcher";
 import { registerAgentHandlers } from "./agent/loop";
+import { SessionManager } from "./agent/session/manager";
+import { registerSessionHandlers } from "./agent/session/handlers";
 import { registerProviderHandlers } from "./auth/register";
 import { registerConfigHandlers } from "./config/handlers";
 import { logger } from "./log";
@@ -26,7 +28,12 @@ async function main(): Promise<void> {
   const transport = new StdioTransport();
   const dispatcher = new Dispatcher(transport);
 
-  registerAgentHandlers(dispatcher);
+  // Single process-wide SessionManager. Manager starts EMPTY; the Shell
+  // issues `session.create` after `rpc.hello` to obtain its bootstrap
+  // sessionId. No implicit/default session — see docs/designs/session-management.md.
+  const sessions = new SessionManager();
+  registerSessionHandlers(dispatcher, sessions);
+  registerAgentHandlers(dispatcher, { manager: sessions });
   registerProviderHandlers(dispatcher);
   registerConfigHandlers(dispatcher);
   // rpc.ping handler — installed before the reader sees any inbound frames so

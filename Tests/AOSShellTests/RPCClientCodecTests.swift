@@ -63,7 +63,7 @@ struct RPCClientCodecTests {
 
         let notif = RPCNotification(
             method: RPCMethod.uiToken,
-            params: UITokenParams(turnId: "T1", delta: "hello")
+            params: UITokenParams(sessionId: "S", turnId: "T1", delta: "hello")
         )
         try serverWrite.write(contentsOf: encodeLine(notif))
 
@@ -114,7 +114,7 @@ struct RPCClientCodecTests {
             let delta = String(format: "%03d", i)
             let notif = RPCNotification(
                 method: RPCMethod.uiToken,
-                params: UITokenParams(turnId: "T1", delta: delta)
+                params: UITokenParams(sessionId: "S", turnId: "T1", delta: delta)
             )
             try serverWrite.write(contentsOf: encodeLine(notif))
         }
@@ -206,6 +206,7 @@ struct RPCClientCodecTests {
         // overflow and confuse the assertion).
         let huge = String(repeating: "x", count: 3 * 1024 * 1024)
         let params = AgentSubmitParams(
+            sessionId: "S",
             turnId: "T1",
             prompt: huge,
             citedContext: CitedContext()

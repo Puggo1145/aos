@@ -17,6 +17,11 @@ import Foundation
 public struct DevContextSnapshot: Codable, Sendable, Equatable {
     /// Milliseconds since epoch.
     public let capturedAt: Int
+    /// Session that issued this turn. Per docs/designs/session-management.md
+    /// the sidecar keeps a *global latest* (not per-session) snapshot — Dev
+    /// Mode renders the sessionId + an "active?" badge so background turns
+    /// are distinguishable.
+    public let sessionId: String
     public let turnId: String
     public let modelId: String
     public let providerId: String
@@ -28,6 +33,7 @@ public struct DevContextSnapshot: Codable, Sendable, Equatable {
 
     public init(
         capturedAt: Int,
+        sessionId: String,
         turnId: String,
         modelId: String,
         providerId: String,
@@ -36,6 +42,7 @@ public struct DevContextSnapshot: Codable, Sendable, Equatable {
         messagesJson: String
     ) {
         self.capturedAt = capturedAt
+        self.sessionId = sessionId
         self.turnId = turnId
         self.modelId = modelId
         self.providerId = providerId

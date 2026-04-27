@@ -175,7 +175,7 @@ final class RoundtripTests: XCTestCase {
     func testUIThinkingEndOmitsDelta() throws {
         let end = RPCNotification(
             method: "ui.thinking",
-            params: UIThinkingParams(turnId: "t", kind: .end)
+            params: UIThinkingParams(sessionId: "s", turnId: "t", kind: .end)
         )
         let bytes = try CanonicalJSON.encode(end)
         let s = String(data: bytes, encoding: .utf8) ?? ""
@@ -186,14 +186,14 @@ final class RoundtripTests: XCTestCase {
     /// of silently producing `delta: nil`. Pairs with the TS discriminated
     /// union's compile-time guarantee.
     func testUIThinkingDeltaWithoutDeltaIsRejected() {
-        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"kind":"delta","turnId":"t"}}"#.data(using: .utf8)!
+        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"kind":"delta","sessionId":"s","turnId":"t"}}"#.data(using: .utf8)!
         XCTAssertThrowsError(try JSONDecoder().decode(RPCNotification<UIThinkingParams>.self, from: raw))
     }
 
     /// The decoder rejects a `kind:"end"` frame that carries a `delta`,
     /// catching producers that accidentally serialize the leftover field.
     func testUIThinkingEndWithDeltaIsRejected() {
-        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"delta":"x","kind":"end","turnId":"t"}}"#.data(using: .utf8)!
+        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"delta":"x","kind":"end","sessionId":"s","turnId":"t"}}"#.data(using: .utf8)!
         XCTAssertThrowsError(try JSONDecoder().decode(RPCNotification<UIThinkingParams>.self, from: raw))
     }
 
@@ -201,14 +201,14 @@ final class RoundtripTests: XCTestCase {
     /// key — the wire contract is keyed on field presence, not field value,
     /// so an explicit null must also be rejected.
     func testUIThinkingEndWithNullDeltaIsRejected() {
-        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"delta":null,"kind":"end","turnId":"t"}}"#.data(using: .utf8)!
+        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"delta":null,"kind":"end","sessionId":"s","turnId":"t"}}"#.data(using: .utf8)!
         XCTAssertThrowsError(try JSONDecoder().decode(RPCNotification<UIThinkingParams>.self, from: raw))
     }
 
     /// Symmetric guard: `{"kind":"delta","delta":null}` is malformed — the
     /// delta variant requires a string, not a present-but-null field.
     func testUIThinkingDeltaWithNullDeltaIsRejected() {
-        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"delta":null,"kind":"delta","turnId":"t"}}"#.data(using: .utf8)!
+        let raw = #"{"jsonrpc":"2.0","method":"ui.thinking","params":{"delta":null,"kind":"delta","sessionId":"s","turnId":"t"}}"#.data(using: .utf8)!
         XCTAssertThrowsError(try JSONDecoder().decode(RPCNotification<UIThinkingParams>.self, from: raw))
     }
 
@@ -300,10 +300,54 @@ final class RoundtripTests: XCTestCase {
         )
     }
 
+    // MARK: - session.*
+
+    func testSessionCreateRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "session.create.json",
+            as: RPCRequest<SessionCreateParams>.self
+        )
+    }
+
+    func testSessionListRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "session.list.json",
+            as: RPCRequest<SessionListParams>.self
+        )
+    }
+
+    func testSessionActivateRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "session.activate.json",
+            as: RPCRequest<SessionActivateParams>.self
+        )
+    }
+
+    func testSessionCreatedRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "session.created.json",
+            as: RPCNotification<SessionCreatedNotificationParams>.self
+        )
+    }
+
+    func testSessionActivatedRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "session.activated.json",
+            as: RPCNotification<SessionActivatedNotificationParams>.self
+        )
+    }
+
+    func testSessionListChangedRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "session.listChanged.json",
+            as: RPCNotification<SessionListChangedNotificationParams>.self
+        )
+    }
+
     // MARK: - Schema invariants
 
     func testProtocolVersionConstant() {
-        XCTAssertEqual(aosProtocolVersion, "1.0.0")
+        XCTAssertEqual(aosProtocolVersion, "2.0.0")
     }
 
     func testHelloFixtureCarriesCanonicalProtocolVersion() throws {

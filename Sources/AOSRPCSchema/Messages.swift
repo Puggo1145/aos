@@ -133,6 +133,14 @@ public enum RPCErrorCode {
     /// "错误模型" allocation `-32300 ~ -32399`.
     public static let agentContextOverflow: Int = -32300
     public static let agentConfigInvalid: Int = -32301
+
+    /// Session segment (session-manager errors). Per
+    /// docs/designs/session-management.md "错误码新段" allocation `-32400 ~ -32499`.
+    public static let unknownSession: Int = -32400
+    /// Reserved: emitted when a request implicitly needs an active session
+    /// and none exists. Currently every session-aware call carries an
+    /// explicit `sessionId`, so this code is unused on the wire today.
+    public static let noActiveSession: Int = -32401
 }
 
 // MARK: - Method name constants
@@ -164,6 +172,12 @@ public enum RPCMethod {
     public static let configMarkOnboardingCompleted = "config.markOnboardingCompleted"
     public static let devContextGet = "dev.context.get"
     public static let devContextChanged = "dev.context.changed"
+    public static let sessionCreate = "session.create"
+    public static let sessionList = "session.list"
+    public static let sessionActivate = "session.activate"
+    public static let sessionCreated = "session.created"
+    public static let sessionActivated = "session.activated"
+    public static let sessionListChanged = "session.listChanged"
 }
 
 // MARK: - JSONValue

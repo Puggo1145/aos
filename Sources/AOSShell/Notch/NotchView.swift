@@ -123,6 +123,7 @@ struct NotchView: View {
             if viewModel.status == .opened {
                 openedContent
                     .animation(.smooth(duration: 0.32), value: viewModel.showSettings)
+                    .animation(.smooth(duration: 0.32), value: viewModel.showHistory)
                     .animation(.smooth(duration: 0.32), value: viewModel.providerService.hasReadyProvider)
                     .animation(.smooth(duration: 0.32), value: viewModel.permissionsService.allGranted)
             }
@@ -146,7 +147,16 @@ struct NotchView: View {
     @ViewBuilder
     private var openedContent: some View {
         ZStack {
-            if viewModel.showSettings {
+            if viewModel.showHistory {
+                SessionHistoryPanelView(
+                    sessionStore: viewModel.agentService.sessionStore,
+                    sessionService: viewModel.sessionService,
+                    topSafeInset: viewModel.deviceNotchRect.height,
+                    onClose: { viewModel.showHistory = false }
+                )
+                .modifier(HistoryMeasurement(viewModel: viewModel))
+                .transition(.blurReplace)
+            } else if viewModel.showSettings {
                 SettingsPanelView(
                     configService: viewModel.configService,
                     providerService: viewModel.providerService,
@@ -382,6 +392,43 @@ private struct SettingsMeasurement: ViewModifier {
 }
 
 private struct SettingsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+// MARK: - History measurement
+//
+// Same shape as SettingsMeasurement. The history list owns an inner
+// ScrollView, so vertical `fixedSize` collapses the panel to its intrinsic
+// height (header + scroll content); `notchOpenedSize` clamps it into
+// [compactMin, notchOpenedMaxHeight] so long lists scroll inside the panel.
+private struct HistoryMeasurement: ViewModifier {
+    let viewModel: NotchViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: viewModel.notchOpenedSize.width)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: HistoryPanelHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
+            .onPreferenceChange(HistoryPanelHeightKey.self) { h in
+                let rounded = h.rounded()
+                if viewModel.historyPanelContentHeight != rounded {
+                    viewModel.historyPanelContentHeight = rounded
+                }
+            }
+    }
+}
+
+private struct HistoryPanelHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
