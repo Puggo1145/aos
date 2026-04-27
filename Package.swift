@@ -36,6 +36,13 @@ let package = Package(
             targets: ["AOSAXSupport"]
         )
     ],
+    dependencies: [
+        // SwiftUI Markdown renderer — used by the agent reply view to render
+        // streamed model output (headings, lists, code blocks, etc.). GFM
+        // support out of the box; theme customized to match the panel's
+        // monospaced visual style. See OpenedPanelView.turnRow.
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0")
+    ],
     targets: [
         .target(
             name: "AOSRPCSchema",
@@ -87,7 +94,11 @@ let package = Package(
         // them.
         .executableTarget(
             name: "AOSShell",
-            dependencies: ["AOSRPCSchema", "AOSOSSenseKit"],
+            dependencies: [
+                "AOSRPCSchema",
+                "AOSOSSenseKit",
+                .product(name: "MarkdownUI", package: "swift-markdown-ui")
+            ],
             path: "Sources/AOSShell",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency=minimal")
