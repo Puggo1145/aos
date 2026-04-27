@@ -37,6 +37,9 @@ import {
   type ProviderCancelLoginParams,
   type ProviderLoginStatusParams,
   type ProviderStatusChangedParams,
+  type ProviderSetApiKeyParams,
+  type ProviderClearApiKeyParams,
+  type ProviderLogoutParams,
   type DevContextGetParams,
   type DevContextChangedParams,
 } from "../src/rpc/rpc-types";
@@ -228,6 +231,32 @@ test("provider.statusChanged fixture roundtrips byte-equal", () => {
   const note = parsed as RPCNotification<ProviderStatusChangedParams>;
   expect(note.method).toBe(RPCMethod.providerStatusChanged);
   expect(["ready", "unauthenticated"]).toContain(note.params.state);
+});
+
+test("provider.setApiKey fixture roundtrips byte-equal", () => {
+  assertRoundtrip("provider.setApiKey.json");
+  const { parsed } = loadFixture("provider.setApiKey.json");
+  const req = parsed as RPCRequest<ProviderSetApiKeyParams>;
+  expect(req.method).toBe(RPCMethod.providerSetApiKey);
+  expect(typeof req.params.providerId).toBe("string");
+  expect(typeof req.params.apiKey).toBe("string");
+  expect(req.params.apiKey.length).toBeGreaterThan(0);
+});
+
+test("provider.clearApiKey fixture roundtrips byte-equal", () => {
+  assertRoundtrip("provider.clearApiKey.json");
+  const { parsed } = loadFixture("provider.clearApiKey.json");
+  const req = parsed as RPCRequest<ProviderClearApiKeyParams>;
+  expect(req.method).toBe(RPCMethod.providerClearApiKey);
+  expect(typeof req.params.providerId).toBe("string");
+});
+
+test("provider.logout fixture roundtrips byte-equal", () => {
+  assertRoundtrip("provider.logout.json");
+  const { parsed } = loadFixture("provider.logout.json");
+  const req = parsed as RPCRequest<ProviderLogoutParams>;
+  expect(req.method).toBe(RPCMethod.providerLogout);
+  expect(typeof req.params.providerId).toBe("string");
 });
 
 test("dev.context.get fixture roundtrips byte-equal", () => {

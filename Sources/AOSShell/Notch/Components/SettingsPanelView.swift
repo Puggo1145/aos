@@ -24,6 +24,7 @@ import AOSOSSenseKit
 
 struct SettingsPanelView: View {
     let configService: ConfigService
+    let providerService: ProviderService
     let permissionsService: PermissionsService
     let topSafeInset: CGFloat
     let onClose: () -> Void
@@ -31,6 +32,9 @@ struct SettingsPanelView: View {
     @State private var page: Page = .main
     @State private var quitConfirming: Bool = false
     @State private var quitConfirmTask: Task<Void, Never>? = nil
+    @State private var apiKeyDraft: String = ""
+    @State private var apiKeySaveError: String? = nil
+    @State private var apiKeySaving: Bool = false
 
     private enum Page: Equatable {
         case main
@@ -38,6 +42,7 @@ struct SettingsPanelView: View {
         case model
         case effort
         case permissions
+        case apiKey
     }
 
     var body: some View {
@@ -73,6 +78,12 @@ struct SettingsPanelView: View {
                         insertion: .move(edge: .trailing).combined(with: .opacity),
                         removal: .move(edge: .trailing).combined(with: .opacity)
                     ))
+            case .apiKey:
+                apiKeyPage
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
             }
         }
         .task {
@@ -86,7 +97,7 @@ struct SettingsPanelView: View {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .animation(.snappy(duration: 0.24, extraBounce: 0.04), value: page)
         .onExitCommand {
             if page == .main { onClose() } else { page = .main }
@@ -134,17 +145,271 @@ struct SettingsPanelView: View {
                 }
             }
 
+            // API key row appears only for apiKey-auth providers (e.g. DeepSeek).
+            // Hidden for OAuth providers — chatgpt-plan handles auth via the
+            // separate Onboard panel.
+            if let p = currentRuntimeProvider, p.authMethod == .apiKey {
+                apiKeyRow(provider: p)
+            }
+
+            // OAuth row mirrors the apiKey row's contract: always present
+            // for OAuth-auth providers so the user can sign in (when not
+            // authed) or re-authenticate (when already signed in). Without
+            // a re-auth path, a stale token + no UI surface means the user
+            // has to nuke `~/.aos/auth/` by hand.
+            if let p = currentRuntimeProvider, p.authMethod == .oauth {
+                signInRow(provider: p)
+            }
+
             permissionsRow
 
             devModeRow
-
-            Spacer(minLength: 0)
 
             quitButton
         }
         .padding(.top, topSafeInset)
         .padding(.horizontal, 24)
         .padding(.bottom, 20)
+    }
+
+    // MARK: - API key row + page
+
+    /// The runtime provider corresponding to the currently *selected* (catalog)
+    /// provider id — joins the catalog-projection (`ConfigService.providers`)
+    /// to the live state (`ProviderService.providers`). Returns `nil` if the
+    /// runtime hasn't yet enumerated the selected provider.
+    private var currentRuntimeProvider: ProviderService.Provider? {
+        guard let selectedId = selectedProvider?.id else { return nil }
+        return providerService.providers.first { $0.id == selectedId }
+    }
+
+    private func apiKeyRow(provider: ProviderService.Provider) -> some View {
+        Button {
+            // Pre-load the existing key into the draft so the field reads
+            // "ready to edit" rather than asking the user to re-type. We
+            // round-trip through Keychain explicitly — the sidecar's in-memory
+            // copy is not a source the UI can read back.
+            apiKeyDraft = (try? providerService.peekApiKey(providerId: provider.id)) ?? ""
+            apiKeySaveError = nil
+            page = .apiKey
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "key.horizontal")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 16)
+                Text("API Key")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer(minLength: 8)
+                if provider.state == .ready {
+                    Circle()
+                        .fill(Color.green.opacity(0.8))
+                        .frame(width: 6, height: 6)
+                    Text("Saved")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                } else {
+                    Circle()
+                        .fill(Color.red.opacity(0.85))
+                        .frame(width: 6, height: 6)
+                    Text("Required")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red.opacity(0.85))
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var apiKeyPage: some View {
+        let providerName = currentRuntimeProvider?.name ?? "Provider"
+        let providerId = currentRuntimeProvider?.id ?? ""
+        return pickerPage(title: "\(providerName) API Key") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Stored locally in macOS Keychain. Never written to disk by the agent process.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                SecureField("sk-…", text: $apiKeyDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+
+                if let err = apiKeySaveError {
+                    Text(err)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await saveApiKey(providerId: providerId) }
+                    } label: {
+                        Text(apiKeySaving ? "Saving…" : "Save")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.accentColor.opacity(0.9))
+                            )
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(apiKeySaving || apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if currentRuntimeProvider?.state == .ready {
+                        Button {
+                            Task { await clearApiKey(providerId: providerId) }
+                        } label: {
+                            Text("Clear")
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                                .foregroundStyle(.white.opacity(0.85))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(apiKeySaving)
+                    }
+                }
+            }
+        }
+    }
+
+    private func saveApiKey(providerId: String) async {
+        apiKeySaving = true
+        apiKeySaveError = nil
+        let err = await providerService.saveApiKey(providerId: providerId, apiKey: apiKeyDraft)
+        apiKeySaving = false
+        if let err {
+            apiKeySaveError = err
+        } else {
+            page = .main
+        }
+    }
+
+    private func clearApiKey(providerId: String) async {
+        apiKeySaving = true
+        apiKeySaveError = nil
+        let err = await providerService.clearApiKey(providerId: providerId)
+        apiKeySaving = false
+        if let err {
+            apiKeySaveError = err
+        } else {
+            apiKeyDraft = ""
+            page = .main
+        }
+    }
+
+    // MARK: - OAuth sign-in row
+    //
+    // Surfaces the same `providerService.startLogin` path that the Onboard
+    // panel uses, so a user who skipped (or unselected) an OAuth provider
+    // during onboarding can still sign in later. The row mirrors the
+    // active `loginSession` for this provider so the in-flight states
+    // (awaiting / verifying / failed) are visible without jumping back to
+    // Onboard.
+
+    private func signInRow(provider: ProviderService.Provider) -> some View {
+        let session = providerService.loginSession.flatMap {
+            $0.providerId == provider.id ? $0 : nil
+        }
+        let isReady = provider.state == .ready
+        // Single button. Label + status text both flip on auth state; tap
+        // either signs in OR re-auths (logout + startLogin) — the user
+        // never has to choose between two near-identical actions.
+        let (statusText, statusColor, isInflight): (String, Color, Bool) = {
+            if let s = session {
+                switch s.state {
+                case .awaitingCallback: return ("Opened in browser…", Color.white.opacity(0.6), true)
+                case .exchanging:       return ("Verifying…",         Color.white.opacity(0.6), true)
+                case .failed:           return (s.message ?? "Sign-in failed", Color.red.opacity(0.85), false)
+                case .success:          return ("Signed in",          Color.green.opacity(0.85), false)
+                }
+            }
+            if isReady { return ("Signed in", Color.green.opacity(0.85), false) }
+            return ("Required", Color.red.opacity(0.85), false)
+        }()
+        let rowTitle = isReady ? "Re-authenticate \(provider.name)" : "Sign in to \(provider.name)"
+        let onTap: () -> Void = {
+            guard providerService.canStartLogin, !isInflight else { return }
+            Task {
+                if session?.state == .failed {
+                    providerService.dismissLoginSession()
+                }
+                if isReady {
+                    _ = await providerService.logout(providerId: provider.id)
+                }
+                await providerService.startLogin(providerId: provider.id)
+            }
+        }
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Button(action: onTap) {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 16)
+                    Text(rowTitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.92))
+                    Spacer(minLength: 8)
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                    Text(statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(statusColor)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isInflight || !providerService.canStartLogin)
+
+            if isInflight {
+                Button("Cancel") {
+                    Task { await providerService.cancelLogin() }
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.white.opacity(0.85))
+                .font(.system(size: 11))
+                .padding(.leading, 12)
+            }
+        }
     }
 
     // MARK: - Permissions row + page

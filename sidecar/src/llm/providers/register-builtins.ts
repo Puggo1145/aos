@@ -103,7 +103,7 @@ export function registerBuiltins(): void {
   if (registered) return;
   registered = true;
 
-  const entry: ApiProviderEntry<"openai-responses"> = {
+  const responsesEntry: ApiProviderEntry<"openai-responses"> = {
     api: "openai-responses",
     stream: createLazyStream(async () => {
       const m = await import("./openai-responses");
@@ -115,5 +115,33 @@ export function registerBuiltins(): void {
     }),
     sourceId: "builtin",
   };
-  registerApiProvider(entry);
+  registerApiProvider(responsesEntry);
+
+  const completionsEntry: ApiProviderEntry<"openai-completions"> = {
+    api: "openai-completions",
+    stream: createLazyStream(async () => {
+      const m = await import("./openai-completions");
+      return m.streamOpenAICompletions;
+    }),
+    streamSimple: createLazySimpleStream(async () => {
+      const m = await import("./openai-completions");
+      return m.streamSimpleOpenAICompletions;
+    }),
+    sourceId: "builtin",
+  };
+  registerApiProvider(completionsEntry);
+
+  const deepseekEntry: ApiProviderEntry<"deepseek"> = {
+    api: "deepseek",
+    stream: createLazyStream(async () => {
+      const m = await import("./deepseek");
+      return m.streamDeepseek;
+    }),
+    streamSimple: createLazySimpleStream(async () => {
+      const m = await import("./deepseek");
+      return m.streamSimpleDeepseek;
+    }),
+    sourceId: "builtin",
+  };
+  registerApiProvider(deepseekEntry);
 }

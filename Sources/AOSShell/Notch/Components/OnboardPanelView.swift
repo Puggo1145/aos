@@ -14,22 +14,44 @@ struct OnboardPanelView: View {
     let providerService: ProviderService
     let topSafeInset: CGFloat
 
+    /// Inline API-key entry state — set when the user taps an apiKey-auth
+    /// provider card. Replaces the provider list, mirroring how
+    /// `loginSession` replaces it for OAuth providers. Lives in @State so
+    /// the draft survives view re-renders driven by other observable changes
+    /// (e.g. `statusChanged` for unrelated providers).
+    @State private var apiKeyEntry: ApiKeyEntry?
+
+    private struct ApiKeyEntry: Equatable {
+        var providerId: String
+        var providerName: String
+        var draft: String
+        var error: String?
+        var saving: Bool
+    }
+
     var body: some View {
+        // No `Spacer` / `maxHeight: .infinity` — outer NotchView pins the
+        // width and reads our intrinsic height via PreferenceKey. A flexing
+        // child here would cause SwiftUI to re-measure during the tray's
+        // expand animation and report 1–2pt drift, visibly nudging the
+        // notch panel height every time the drawer toggles.
         VStack(alignment: .leading, spacing: 12) {
             Text(headline)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.9))
             content
-            Spacer(minLength: 0)
         }
         .padding(.top, topSafeInset + 4)
         .padding(.leading, 24)
         .padding(.trailing, 24)
         .padding(.bottom, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var headline: String {
+        if let entry = apiKeyEntry {
+            return "Enter \(entry.providerName) API key"
+        }
         guard let session = providerService.loginSession else {
             if !providerService.statusLoaded {
                 return providerService.statusError == nil
@@ -48,7 +70,9 @@ struct OnboardPanelView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let session = providerService.loginSession {
+        if apiKeyEntry != nil {
+            apiKeyEntryCard
+        } else if let session = providerService.loginSession {
             inflightCard(session)
         } else {
             ForEach(providerService.providers) { p in
@@ -57,11 +81,27 @@ struct OnboardPanelView: View {
                     subtitle: subtitle(for: p),
                     style: cardStyle(for: p),
                     enabled: providerService.canStartLogin && p.state == .unauthenticated,
-                    onTap: {
-                        Task { await providerService.startLogin(providerId: p.id) }
-                    }
+                    onTap: { handleProviderTap(p) }
                 )
             }
+        }
+    }
+
+    /// Route by `authMethod`: OAuth providers go through the existing
+    /// `startLogin` flow; apiKey providers switch the panel into inline
+    /// API-key entry mode.
+    private func handleProviderTap(_ p: ProviderService.Provider) {
+        switch p.authMethod {
+        case .oauth:
+            Task { await providerService.startLogin(providerId: p.id) }
+        case .apiKey:
+            apiKeyEntry = ApiKeyEntry(
+                providerId: p.id,
+                providerName: p.name,
+                draft: (try? providerService.peekApiKey(providerId: p.id)) ?? "",
+                error: nil,
+                saving: false
+            )
         }
     }
 
@@ -69,7 +109,11 @@ struct OnboardPanelView: View {
         switch p.state {
         case .ready: return "Signed in"
         case .unauthenticated:
-            return providerService.canStartLogin ? "Click to sign in" : "Loading…"
+            guard providerService.canStartLogin else { return "Loading…" }
+            switch p.authMethod {
+            case .oauth:  return "Click to sign in"
+            case .apiKey: return "Click to add API key"
+            }
         case .unknown:
             // First-paint state before sidecar replies. Render a loading copy
             // rather than a clickable affordance.
@@ -148,6 +192,97 @@ struct OnboardPanelView: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.white.opacity(0.85))
         .font(.system(size: 12))
+    }
+
+    // MARK: - API key entry card
+    //
+    // Mirrors the SecureField / Save / Cancel flow used in Settings, but
+    // inline in the onboard panel. Once `saveApiKey` succeeds, the sidecar
+    // emits `provider.statusChanged → ready`, `hasReadyProvider` flips, and
+    // NotchView swaps this panel out for OpenedPanelView automatically — no
+    // explicit navigation here.
+
+    @ViewBuilder
+    private var apiKeyEntryCard: some View {
+        if let entry = apiKeyEntry {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Stored locally in macOS Keychain.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.55))
+
+                SecureField("sk-…", text: apiKeyDraftBinding)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.white.opacity(0.06))
+                    )
+
+                if let err = entry.error {
+                    Text(err)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await commitApiKey() }
+                    } label: {
+                        Text(entry.saving ? "Saving…" : "Save")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.accentColor.opacity(0.9))
+                            )
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(entry.saving || entry.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button("Cancel") {
+                        apiKeyEntry = nil
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .font(.system(size: 12))
+                    .disabled(entry.saving)
+                }
+            }
+        }
+    }
+
+    private var apiKeyDraftBinding: Binding<String> {
+        Binding(
+            get: { apiKeyEntry?.draft ?? "" },
+            set: { newValue in
+                guard var e = apiKeyEntry else { return }
+                e.draft = newValue
+                apiKeyEntry = e
+            }
+        )
+    }
+
+    private func commitApiKey() async {
+        guard var entry = apiKeyEntry else { return }
+        entry.saving = true
+        entry.error = nil
+        apiKeyEntry = entry
+        let err = await providerService.saveApiKey(providerId: entry.providerId, apiKey: entry.draft)
+        if let err {
+            entry.saving = false
+            entry.error = err
+            apiKeyEntry = entry
+        } else {
+            // Success — clear local state. The view swap is driven by
+            // `hasReadyProvider` flipping via the sidecar's statusChanged.
+            apiKeyEntry = nil
+        }
     }
 }
 

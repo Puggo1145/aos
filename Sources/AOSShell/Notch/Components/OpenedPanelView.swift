@@ -182,12 +182,13 @@ struct OpenedPanelView: View {
                 set: { viewModel.inputFocused = $0 }
             )
         )
-        // Disable typing + submission when no provider is configured —
-        // the agent loop has nothing to dispatch the turn to. Permission
-        // gaps don't disable the input here: the user can still queue
-        // a prompt while granting access in Settings.
-        .disabled(!viewModel.providerService.hasReadyProvider)
-        .opacity(viewModel.providerService.hasReadyProvider ? 1.0 : 0.55)
+        // Disable typing + submission when the currently *selected* provider
+        // isn't authenticated — otherwise the user could compose and send
+        // against e.g. codex with no token, and the agent loop would just
+        // bounce the request. Permission gaps don't disable the input here:
+        // the user can still queue a prompt while granting access in Settings.
+        .disabled(!viewModel.selectedProviderReady)
+        .opacity(viewModel.selectedProviderReady ? 1.0 : 0.55)
         // Pin the composer to its natural vertical size so the parent
         // VStack's `maxHeight: .infinity` (needed for history) can't
         // stretch it. Without this, the inner NSTextView would accept

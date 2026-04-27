@@ -35,15 +35,36 @@ struct SystemTrayView: View {
             // drawer is collapsed so accidental scrolls don't reveal
             // hidden rows past the clipped frame.
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 6) {
+                // Two-block layout (NOT one VStack with spacing). The first
+                // row + its own vertical padding(10) defines the collapsed
+                // height exactly, so when the parent clips to
+                // `notchTrayCollapsedHeight` the additional rows start
+                // immediately *at* the clip line — no spillover, no partial
+                // second row peeking through. A single VStack with
+                // spacing(6) would push the second row's first ~4pt into
+                // the clip window.
+                VStack(alignment: .leading, spacing: 0) {
+                    // Pin first-block to EXACTLY the collapsed height. The
+                    // row's intrinsic height varies a few points across
+                    // layout passes (SF Symbol metrics, font baseline
+                    // settling, first-frame vs measured), which used to
+                    // cause an intermittent 1–4pt sliver of the second
+                    // row to bleed through the clip line on first open.
                     HStack(spacing: 8) {
                         noticeRow(notices[0])
                         if hasMultiple { chevronButton }
                     }
-                    ForEach(notices.dropFirst()) { noticeRow($0) }
+                    .padding(.horizontal, 16)
+                    .frame(height: viewModel.notchTrayCollapsedHeight)
+
+                    if hasMultiple {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(notices.dropFirst()) { noticeRow($0) }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
+                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
                 .background(
                     GeometryReader { geo in
                         Color.clear.preference(

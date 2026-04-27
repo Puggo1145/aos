@@ -69,12 +69,19 @@ public final class NotchViewModel {
     public let notchOpenedWidth: CGFloat = 500
     public let notchOpenedCompactMinHeight: CGFloat = 100
     public let notchOpenedMaxHeight: CGFloat = 480
-    /// Settings panel uses a fixed budget sized to fit:
-    /// top-safe-inset + back chevron + provider/model/effort cards row +
-    /// permissions row + dev-mode row + quit button + bottom padding. Bumped
-    /// from 240 → 300 when Dev Mode was added; revisit alongside any new
-    /// settings row.
-    public let notchOpenedSettingsHeight: CGFloat = 300
+
+    /// Measured natural height of whichever onboarding panel is currently
+    /// rendered (PermissionOnboardPanelView or OnboardPanelView). Reported
+    /// up via PreferenceKey so the silhouette hugs the panel's intrinsic
+    /// size — without this the panel falls back to `compactMin` and the
+    /// cards collide with the tray drawer below.
+    public var onboardingContentHeight: CGFloat = 0
+
+    /// Measured natural height of SettingsPanelView. Same content-driven
+    /// pattern as onboarding: PreferenceKey reports the intrinsic height,
+    /// `notchOpenedSize` clamps it into [compactMin, max]. Adding/removing
+    /// rows in Settings no longer needs a hand-tuned constant.
+    public var settingsContentHeight: CGFloat = 0
 
     /// Vertical chrome around the dynamic content inside OpenedPanelView:
     /// top safe inset + spacing(8) between history and composer + bottom
@@ -181,11 +188,44 @@ public final class NotchViewModel {
         return "A required permission is disabled"
     }
 
+    /// True while NotchView is showing one of the first-run onboarding
+    /// panels (permission gate or provider sign-in). Mirrors the branch
+    /// conditions in `NotchView.openedContent` so `notchOpenedSize` can
+    /// reserve enough vertical space for the cards. Once the latch
+    /// `hasCompletedOnboarding` flips, post-onboarding permission/provider
+    /// drops surface inline and this stays false.
+    public var isOnboarding: Bool {
+        guard !configService.hasCompletedOnboarding else { return false }
+        return !permissionsService.allGranted || !providerService.hasReadyProvider
+    }
+
+    /// True iff the *currently selected* provider is in `.ready`. Drives the
+    /// composer's enabled state — `hasReadyProvider` (any-ready) is too loose:
+    /// it lets the user submit a turn against an unauthenticated provider
+    /// just because some other provider happens to be authed.
+    public var selectedProviderReady: Bool {
+        guard let id = configService.effectiveSelection?.providerId else { return false }
+        return providerService.providers.contains { $0.id == id && $0.state == .ready }
+    }
+
     public var notchOpenedSize: CGSize {
-        // Settings always needs the full panel — provider/model/effort cards
-        // plus the quit button don't fit in compact height.
+        // Settings: drive the silhouette off the panel's measured intrinsic
+        // height (same pattern as onboarding), so adding/removing rows just
+        // flows through. Picker sub-pages exceeding the max ceiling let
+        // their inner ScrollView take over.
         if showSettings {
-            return CGSize(width: notchOpenedWidth, height: notchOpenedSettingsHeight)
+            let h = min(max(settingsContentHeight, notchOpenedCompactMinHeight), notchOpenedMaxHeight)
+            return CGSize(width: notchOpenedWidth, height: h)
+        }
+        // Onboarding panels: drive the silhouette off the panel's measured
+        // intrinsic height so the cards' natural size dictates the frame.
+        // Otherwise we'd fall through to the compactMin floor (composer is
+        // not mounted, so the measured-composer path can't fire), the cards
+        // would overflow, and the tray drawer below would visually clip
+        // them when notices push it open.
+        if isOnboarding {
+            let h = max(onboardingContentHeight, notchOpenedCompactMinHeight)
+            return CGSize(width: notchOpenedWidth, height: h)
         }
         // No turns yet: panel hugs the composer card so the empty state
         // doesn't show wasted whitespace between the notch strip and the

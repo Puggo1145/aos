@@ -111,24 +111,25 @@ struct ComposerCard: View {
 
     @ViewBuilder
     private var modelMenu: some View {
+        // Composer-side picker is intentionally scoped to the active
+        // provider's models — provider switching lives in Settings.
+        // Listing every provider's models here let the user pick a model
+        // belonging to a provider they hadn't authed.
         Menu {
-            ForEach(configService.providers) { provider in
-                Section(provider.name) {
-                    ForEach(provider.models) { model in
-                        Button {
-                            Task {
-                                await configService.selectModel(
-                                    providerId: provider.id,
-                                    modelId: model.id
-                                )
-                            }
-                        } label: {
-                            if currentSelection?.providerId == provider.id,
-                               currentSelection?.modelId == model.id {
-                                Label(model.name, systemImage: "checkmark")
-                            } else {
-                                Text(model.name)
-                            }
+            if let provider = currentProvider {
+                ForEach(provider.models) { model in
+                    Button {
+                        Task {
+                            await configService.selectModel(
+                                providerId: provider.id,
+                                modelId: model.id
+                            )
+                        }
+                    } label: {
+                        if currentSelection?.modelId == model.id {
+                            Label(model.name, systemImage: "checkmark")
+                        } else {
+                            Text(model.name)
                         }
                     }
                 }
@@ -205,6 +206,11 @@ struct ComposerCard: View {
     private var currentModel: ConfigModelEntry? {
         guard let sel = currentSelection else { return nil }
         return configService.model(providerId: sel.providerId, modelId: sel.modelId)
+    }
+
+    private var currentProvider: ConfigProviderEntry? {
+        guard let sel = currentSelection else { return nil }
+        return configService.provider(id: sel.providerId)
     }
 
     private func effortDisplayName(_ e: ConfigEffort) -> String {

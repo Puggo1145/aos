@@ -15,11 +15,13 @@ import Foundation
 public struct ProviderInfo: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
+    public let authMethod: ProviderAuthMethod
     public let state: ProviderState
 
-    public init(id: String, name: String, state: ProviderState) {
+    public init(id: String, name: String, authMethod: ProviderAuthMethod, state: ProviderState) {
         self.id = id
         self.name = name
+        self.authMethod = authMethod
         self.state = state
     }
 }
@@ -27,6 +29,13 @@ public struct ProviderInfo: Codable, Sendable, Equatable {
 public enum ProviderState: String, Codable, Sendable, Equatable, CaseIterable {
     case ready
     case unauthenticated
+}
+
+/// How the user authenticates with this provider. Drives Shell UI:
+/// `oauth` shows a login button; `apiKey` shows a secure text field.
+public enum ProviderAuthMethod: String, Codable, Sendable, Equatable, CaseIterable {
+    case oauth
+    case apiKey
 }
 
 public enum ProviderLoginState: String, Codable, Sendable, Equatable, CaseIterable {
@@ -125,6 +134,56 @@ public struct ProviderStatusChangedParams: Codable, Sendable, Equatable {
         self.reason = reason
         self.message = message
     }
+}
+
+// MARK: - provider.setApiKey / provider.clearApiKey
+//
+// Used by apiKey-auth providers (e.g. deepseek). The Shell owns durable
+// persistence (Keychain) and pushes the current value to the sidecar at
+// startup AND on user edits. The sidecar holds the key in memory only.
+//
+// Sidecar emits `provider.statusChanged` after applying the change so the
+// Shell ProviderService can refresh its state without polling.
+
+public struct ProviderSetApiKeyParams: Codable, Sendable, Equatable {
+    public let providerId: String
+    public let apiKey: String
+
+    public init(providerId: String, apiKey: String) {
+        self.providerId = providerId
+        self.apiKey = apiKey
+    }
+}
+
+public struct ProviderSetApiKeyResult: Codable, Sendable, Equatable {
+    public let ok: Bool
+    public init(ok: Bool) { self.ok = ok }
+}
+
+public struct ProviderClearApiKeyParams: Codable, Sendable, Equatable {
+    public let providerId: String
+    public init(providerId: String) { self.providerId = providerId }
+}
+
+public struct ProviderClearApiKeyResult: Codable, Sendable, Equatable {
+    /// `false` when no key was present — handler is idempotent.
+    public let cleared: Bool
+    public init(cleared: Bool) { self.cleared = cleared }
+}
+
+// `provider.logout` — Shell → Bun. Auth-method-agnostic clear: deletes
+// the OAuth token file or wipes the in-memory apiKey, so the next
+// `startLogin` / `setApiKey` runs against a clean slate.
+
+public struct ProviderLogoutParams: Codable, Sendable, Equatable {
+    public let providerId: String
+    public init(providerId: String) { self.providerId = providerId }
+}
+
+public struct ProviderLogoutResult: Codable, Sendable, Equatable {
+    /// `false` when nothing was cleared — handler is idempotent.
+    public let cleared: Bool
+    public init(cleared: Bool) { self.cleared = cleared }
 }
 
 private struct EmptyCodingKey: CodingKey {

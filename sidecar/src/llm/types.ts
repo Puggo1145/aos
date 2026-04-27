@@ -20,6 +20,7 @@
 export type Api =
   | "openai-responses"
   | "openai-completions"
+  | "deepseek"
   | "anthropic-messages"
   | "google-generative-ai"
   | "bedrock-converse-stream";

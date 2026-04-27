@@ -206,6 +206,27 @@ final class RoundtripTests: XCTestCase {
         )
     }
 
+    func testProviderSetApiKeyRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "provider.setApiKey.json",
+            as: RPCRequest<ProviderSetApiKeyParams>.self
+        )
+    }
+
+    func testProviderClearApiKeyRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "provider.clearApiKey.json",
+            as: RPCRequest<ProviderClearApiKeyParams>.self
+        )
+    }
+
+    func testProviderLogoutRoundtrip() throws {
+        try assertRoundtrip(
+            fixture: "provider.logout.json",
+            as: RPCRequest<ProviderLogoutParams>.self
+        )
+    }
+
     // MARK: - dev.*
 
     func testDevContextGetRoundtrip() throws {

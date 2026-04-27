@@ -38,4 +38,22 @@ final class NotchWindow: NSWindow {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    // LSUIElement + borderless windows have no app-supplied Edit menu, so the
+    // system never wires Cmd-X/C/V/A/Z to the first responder. Without this
+    // override paste silently no-ops inside the notch's TextField/SecureField.
+    // Forward the standard editing shortcuts to the responder chain manually.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if super.performKeyEquivalent(with: event) { return true }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags == .command else { return false }
+        switch event.charactersIgnoringModifiers {
+        case "x": return NSApp.sendAction(#selector(NSText.cut(_:)),       to: nil, from: self)
+        case "c": return NSApp.sendAction(#selector(NSText.copy(_:)),      to: nil, from: self)
+        case "v": return NSApp.sendAction(#selector(NSText.paste(_:)),     to: nil, from: self)
+        case "a": return NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: self)
+        case "z": return NSApp.sendAction(Selector(("undo:")),             to: nil, from: self)
+        default:  return false
+        }
+    }
 }

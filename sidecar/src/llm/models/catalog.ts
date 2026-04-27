@@ -58,7 +58,36 @@ export const MODELS = {
       maxTokens: 128_000,
     },
   },
-} as const satisfies Record<string, Record<string, Model<"openai-responses">>>;
+  // Sourced from api-docs.deepseek.com (2026-04-26). Both models stream
+  // reasoning via `delta.reasoning_content` and bill cache reads at a steep
+  // discount; cache writes are not separately billed (`cacheWrite: 0`).
+  "deepseek": {
+    "deepseek-v4-flash": {
+      id: "deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
+      api: "deepseek",
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+      contextWindow: 1_000_000,
+      maxTokens: 384_000,
+    },
+    "deepseek-v4-pro": {
+      id: "deepseek-v4-pro",
+      name: "DeepSeek V4 Pro",
+      api: "deepseek",
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0 },
+      contextWindow: 1_000_000,
+      maxTokens: 384_000,
+    },
+  },
+} as const satisfies Record<string, Record<string, Model<Api>>>;
 
 export type KnownProvider = keyof typeof MODELS;
 export type KnownModelId<P extends KnownProvider> = keyof (typeof MODELS)[P];
@@ -68,18 +97,21 @@ export type KnownModelId<P extends KnownProvider> = keyof (typeof MODELS)[P];
 /// file. `satisfies` ensures every value is an actual catalog key.
 export const PROVIDER_IDS = {
   chatgptPlan: "chatgpt-plan",
+  deepseek: "deepseek",
 } as const satisfies Record<string, KnownProvider>;
 
 /// Human-readable display names (shown in Onboarding cards, model
 /// pickers, etc). Keyed by the same provider id as `MODELS`.
 export const PROVIDER_NAMES: Record<KnownProvider, string> = {
   "chatgpt-plan": "Codex Subscription",
+  "deepseek": "DeepSeek",
 };
 
 /// Default model id per provider. Used when no explicit selection is
 /// configured (boot, fresh session, etc).
 export const DEFAULT_MODEL_PER_PROVIDER: { [P in KnownProvider]: KnownModelId<P> } = {
   "chatgpt-plan": "gpt-5.5",
+  "deepseek": "deepseek-v4-flash",
 };
 
 /// Reasoning effort enum. Mirrors `ThinkingLevel` from `../types`; declared

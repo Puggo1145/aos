@@ -111,6 +111,9 @@ export const RPCMethod = {
   providerCancelLogin: "provider.cancelLogin",
   providerLoginStatus: "provider.loginStatus",
   providerStatusChanged: "provider.statusChanged",
+  providerSetApiKey: "provider.setApiKey",
+  providerClearApiKey: "provider.clearApiKey",
+  providerLogout: "provider.logout",
   configGet: "config.get",
   configSet: "config.set",
   configSetEffort: "config.setEffort",
@@ -317,9 +320,14 @@ export type ProviderLoginState =
   | "failed";
 export type ProviderStatusReason = "authInvalidated" | "loggedOut";
 
+/// How the user authenticates with this provider. Drives Shell UI:
+/// `oauth` shows a login button; `apiKey` shows a secure text field.
+export type ProviderAuthMethod = "oauth" | "apiKey";
+
 export interface ProviderInfo {
   id: string;
   name: string;
+  authMethod: ProviderAuthMethod;
   state: ProviderState;
 }
 
@@ -359,6 +367,46 @@ export interface ProviderStatusChangedParams {
   state: ProviderState;
   reason?: ProviderStatusReason;
   message?: string;
+}
+
+// `provider.setApiKey` / `provider.clearApiKey` — Shell → Bun.
+// Used by apiKey-auth providers (e.g. deepseek). The Shell owns durable
+// persistence (Keychain) and pushes the current value to the sidecar at
+// startup AND on user edits. The sidecar holds the key in memory only.
+//
+// Sidecar emits `provider.statusChanged` after applying the change so the
+// Shell ProviderService can refresh its state without polling.
+
+export interface ProviderSetApiKeyParams {
+  providerId: string;
+  apiKey: string;
+}
+
+export interface ProviderSetApiKeyResult {
+  ok: boolean;
+}
+
+export interface ProviderClearApiKeyParams {
+  providerId: string;
+}
+
+export interface ProviderClearApiKeyResult {
+  /// `false` when no key was present — handler is idempotent.
+  cleared: boolean;
+}
+
+// `provider.logout` — Shell → Bun. Auth-method-agnostic clear. For
+// apiKey providers it forwards to the same store as `provider.clearApiKey`;
+// for OAuth providers it deletes the persisted token file (and any
+// `.invalid` quarantine sibling) so the next `startLogin` runs the full
+// authorization flow from scratch.
+export interface ProviderLogoutParams {
+  providerId: string;
+}
+
+export interface ProviderLogoutResult {
+  /// `false` when nothing was cleared (no token / no key on disk).
+  cleared: boolean;
 }
 
 // ---------------------------------------------------------------------------

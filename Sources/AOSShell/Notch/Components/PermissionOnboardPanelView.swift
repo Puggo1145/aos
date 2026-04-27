@@ -36,6 +36,11 @@ struct PermissionOnboardPanelView: View {
     }
 
     var body: some View {
+        // No `Spacer` / `maxHeight: .infinity` — outer NotchView pins the
+        // width and reads our intrinsic height via PreferenceKey. A flexing
+        // child here would cause SwiftUI to re-measure during the tray's
+        // expand animation and report 1–2pt drift, visibly nudging the
+        // notch panel height every time the drawer toggles.
         VStack(alignment: .leading, spacing: 0) {
             if let current {
                 PermissionCard(
@@ -49,12 +54,11 @@ struct PermissionOnboardPanelView: View {
                 .id(current)
                 .transition(.blurReplace)
             }
-            Spacer(minLength: 0)
         }
         .padding(.top, topSafeInset + 4)
         .padding(.horizontal, 24)
         .padding(.bottom, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .animation(.smooth(duration: 0.42, extraBounce: 0.05), value: current)
         .task(id: current) {
             // Poll while the user is granting. macOS does not push TCC

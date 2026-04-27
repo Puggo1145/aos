@@ -160,12 +160,12 @@ struct NotchView: View {
             if viewModel.showSettings {
                 SettingsPanelView(
                     configService: viewModel.configService,
+                    providerService: viewModel.providerService,
                     permissionsService: viewModel.permissionsService,
                     topSafeInset: viewModel.deviceNotchRect.height,
                     onClose: { viewModel.showSettings = false }
                 )
-                .frame(width: viewModel.notchOpenedSize.width,
-                       height: viewModel.notchOpenedSize.height)
+                .modifier(SettingsMeasurement(viewModel: viewModel))
                 .transition(.blurReplace)
             } else if !viewModel.configService.hasCompletedOnboarding,
                       !viewModel.permissionsService.allGranted {
@@ -177,8 +177,7 @@ struct NotchView: View {
                     permissionsService: viewModel.permissionsService,
                     topSafeInset: viewModel.deviceNotchRect.height
                 )
-                .frame(width: viewModel.notchOpenedSize.width,
-                       height: viewModel.notchOpenedSize.height)
+                .modifier(OnboardingMeasurement(viewModel: viewModel))
                 .transition(.blurReplace)
             } else if !viewModel.configService.hasCompletedOnboarding,
                       !viewModel.providerService.hasReadyProvider {
@@ -189,8 +188,7 @@ struct NotchView: View {
                     providerService: viewModel.providerService,
                     topSafeInset: viewModel.deviceNotchRect.height
                 )
-                .frame(width: viewModel.notchOpenedSize.width,
-                       height: viewModel.notchOpenedSize.height)
+                .modifier(OnboardingMeasurement(viewModel: viewModel))
                 .transition(.blurReplace)
             } else {
                 OpenedPanelView(
@@ -211,6 +209,40 @@ struct NotchView: View {
                 await viewModel.configService.markOnboardingCompleted()
             }
         }
+        .task(id: providerReadyKey) {
+            // First-auth selection bootstrap: if the user hasn't explicitly
+            // chosen a provider yet, `effectiveSelection` falls back to the
+            // catalog's first entry (e.g. codex) — which can leave the
+            // composer pointed at an unauthenticated provider after the
+            // user just authed a different one in onboarding. When the
+            // currently-defaulted provider isn't ready but some other
+            // provider is, persist a selection to the ready one. Only
+            // fires while `selection == nil` so explicit user picks are
+            // never overridden.
+            await reconcileSelectionIfNeeded()
+        }
+    }
+
+    /// Stable signal that flips whenever any provider's readiness changes.
+    /// Used as the `task(id:)` key so the reconciliation re-runs at the
+    /// right moments without firing on unrelated re-renders.
+    private var providerReadyKey: String {
+        viewModel.providerService.providers
+            .map { "\($0.id):\($0.state == .ready ? 1 : 0)" }
+            .joined(separator: ",")
+    }
+
+    @MainActor
+    private func reconcileSelectionIfNeeded() async {
+        let cs = viewModel.configService
+        let ps = viewModel.providerService
+        guard ps.statusLoaded, cs.selection == nil else { return }
+        guard let sel = cs.effectiveSelection else { return }
+        let currentReady = ps.providers.contains { $0.id == sel.providerId && $0.state == .ready }
+        if currentReady { return }
+        guard let ready = ps.providers.first(where: { $0.state == .ready }),
+              let entry = cs.provider(id: ready.id) else { return }
+        await cs.selectModel(providerId: ready.id, modelId: entry.defaultModelId)
     }
 
     /// Both onboard prerequisites first satisfied while config has
@@ -272,5 +304,97 @@ struct NotchView: View {
         let windowCenterX = viewModel.screenRect.width / 2
         let notchCenterX = viewModel.deviceNotchRect.midX - viewModel.screenRect.minX
         return notchCenterX - windowCenterX
+    }
+}
+
+// MARK: - Onboarding measurement
+//
+// Width-pin + vertical fixedSize collapses the onboarding panel to its
+// intrinsic height (the inner `.frame(maxHeight: .infinity)` + Spacer
+// otherwise expand to fill any offered height). The measured value flows
+// up to `viewModel.onboardingContentHeight`, which `notchOpenedSize` then
+// uses so the silhouette hugs the cards. The tray drawer sits at
+// `offset(y: shapeHeight)` below this — natural panel height means the
+// drawer extends downward without ever clipping the cards.
+private struct OnboardingMeasurement: ViewModifier {
+    let viewModel: NotchViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: viewModel.notchOpenedSize.width)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: OnboardingHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
+            .onPreferenceChange(OnboardingHeightKey.self) { h in
+                // Round to integer points so sub-pixel jitter from
+                // SwiftUI's per-frame re-layout during the tray's expand
+                // animation doesn't propagate into `onboardingContentHeight`.
+                // `notchOpenedSize.height` is animated via `.animation`, so
+                // even a 0.5pt drift would visibly nudge the notch panel
+                // taller every time the drawer toggles. Real content
+                // changes (permission card swap, provider → apiKey entry)
+                // are always >> 1pt and still flow through.
+                let rounded = h.rounded()
+                if viewModel.onboardingContentHeight != rounded {
+                    viewModel.onboardingContentHeight = rounded
+                }
+            }
+    }
+}
+
+private struct OnboardingHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+// MARK: - Settings measurement
+//
+// Mirror of OnboardingMeasurement for the Settings panel. Width is pinned
+// to the open-state panel width; vertical `fixedSize` collapses the inner
+// VStack to its intrinsic height (Spacers and `maxHeight: .infinity`
+// otherwise expand to fill any offered height). The measured value flows
+// up to `viewModel.settingsContentHeight`, and `notchOpenedSize` clamps it
+// into [compactMin, notchOpenedMaxHeight] — picker sub-pages whose lists
+// exceed the ceiling let their inner ScrollView take over.
+private struct SettingsMeasurement: ViewModifier {
+    let viewModel: NotchViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: viewModel.notchOpenedSize.width)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: SettingsHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
+            .onPreferenceChange(SettingsHeightKey.self) { h in
+                // Round to integer points to suppress sub-pixel jitter from
+                // SwiftUI's per-frame relayout while sub-page transitions
+                // animate. Real content changes (row added, picker page
+                // pushed) are always >> 1pt and still flow through.
+                let rounded = h.rounded()
+                if viewModel.settingsContentHeight != rounded {
+                    viewModel.settingsContentHeight = rounded
+                }
+            }
+    }
+}
+
+private struct SettingsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
