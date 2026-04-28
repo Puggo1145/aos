@@ -16,11 +16,14 @@
 //     `reasoning`).
 //   - The `max_tokens` field is the legacy spelling — DeepSeek's docs use
 //     it exclusively, `max_completion_tokens` is unrecognized.
-//   - V4 thinking mode REQUIRES prior-turn `reasoning_content` to be echoed
-//     back on the assistant message — omitting it 400s with "The
-//     reasoning_content in the thinking mode must be passed back to the API"
-//     on the next round (most visibly on tool-call follow-ups). The replay
-//     is wired in `openai-completions.ts::convertMessages`, gated on
+//   - V4 thinking mode REQUIRES `reasoning_content` to be echoed back on
+//     every prior assistant message that carried `tool_calls`; omission
+//     400s with "The reasoning_content in the thinking mode must be
+//     passed back to the API". An empty string `""` is accepted as the
+//     fallback when the original turn captured no thinking (e.g. aborted
+//     earlier turns). Content-only assistant turns do not require replay
+//     per DeepSeek's thinking_mode docs. The replay policy is implemented
+//     in `openai-completions.ts::convertMessages`, gated on
 //     `compat.reasoningField` + `supportsThinking(model)`.
 
 import type {

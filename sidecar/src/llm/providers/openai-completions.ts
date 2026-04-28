@@ -239,15 +239,28 @@ function convertMessages<TApi extends Api>(
       if (am.content === undefined && !am.tool_calls) continue;
       if (am.content === undefined) am.content = null;
       // Replay `reasoning_content` (or the compat-declared variant) on
-      // assistant messages whose model is in thinking mode. DeepSeek V4 in
-      // thinking mode 400s with "The reasoning_content in the thinking mode
-      // must be passed back to the API" if we omit it on the next round —
-      // this is exactly the case that broke the bash-tool follow-up turn.
+      // assistant messages whose model is in thinking mode. Per DeepSeek's
+      // thinking_mode docs, the rule is asymmetric:
+      //   - Assistant turns that emitted `tool_calls` MUST carry
+      //     `reasoning_content` on every replay; omission 400s with
+      //     "The reasoning_content in the thinking mode must be passed
+      //     back to the API". Empty string is accepted as the fallback
+      //     when the original turn produced no captured thinking (e.g.
+      //     an aborted/interrupted earlier turn whose thinking block
+      //     never landed).
+      //   - Content-only assistant turns do NOT require replay; we still
+      //     forward thinking when we have it, and skip the field when we
+      //     don't.
       // Gating on `supportsThinking(model)` keeps us from sending the field
       // to OpenAI Chat Completions (which has no reasoning surface there)
       // even though `DEFAULT_COMPAT.reasoningField` is non-null.
-      if (compat.reasoningField && supportsThinking(model) && thinkingParts.length > 0) {
-        am[compat.reasoningField] = thinkingParts.join("");
+      if (compat.reasoningField && supportsThinking(model)) {
+        const reasoning = thinkingParts.join("");
+        if (reasoning.length > 0) {
+          am[compat.reasoningField] = reasoning;
+        } else if (am.tool_calls) {
+          am[compat.reasoningField] = "";
+        }
       }
       out.push(am);
       continue;

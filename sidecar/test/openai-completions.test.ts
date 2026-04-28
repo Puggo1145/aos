@@ -258,6 +258,80 @@ test("assistant thinking blocks are replayed via reasoning_content on DeepSeek t
   expect(am["reasoning_content"]).toBe("internal monologue");
 });
 
+test("DeepSeek thinking-mode assistant with tool_calls but no thinking gets reasoning_content: \"\"", () => {
+  // Per DeepSeek thinking_mode docs: any historical assistant turn that
+  // carried `tool_calls` MUST have `reasoning_content` on replay, or the
+  // next round 400s with "The reasoning_content in the thinking mode
+  // must be passed back to the API". When the original turn captured no
+  // thinking (e.g. an aborted prior turn whose thinking block never
+  // landed), we send an empty string — accepted by the API, omission is
+  // not. This pins the regression on tool-call follow-ups where the
+  // assistant's tool_call survived but its thinking did not.
+  const assistant: AssistantMessage = {
+    role: "assistant",
+    content: [
+      { type: "toolCall", id: "call_1", name: "do_thing", arguments: { x: 1 } } as ToolCall,
+    ],
+    api: "deepseek",
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+    usage: emptyUsage(),
+    stopReason: "toolUse",
+    timestamp: 0,
+  };
+  const payload = buildPayload(
+    makeDeepseekModel(),
+    ctx([
+      { role: "user", content: "q", timestamp: 0 },
+      assistant,
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "do_thing",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: 0,
+      },
+    ]),
+    {},
+    DEEPSEEK_COMPAT,
+  );
+  const messages = payload["messages"] as Array<Record<string, unknown>>;
+  const am = messages[2]!;
+  expect(am["role"]).toBe("assistant");
+  expect(am["tool_calls"]).toBeDefined();
+  expect(am["reasoning_content"]).toBe("");
+});
+
+test("DeepSeek thinking-mode content-only assistant with no thinking omits reasoning_content", () => {
+  // Symmetric to the rule above: content-only assistant turns do not
+  // require replay per DeepSeek docs, so we omit the field rather than
+  // sending an empty string we don't have to.
+  const assistant: AssistantMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "plain answer" } as TextContent],
+    api: "deepseek",
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+    usage: emptyUsage(),
+    stopReason: "stop",
+    timestamp: 0,
+  };
+  const payload = buildPayload(
+    makeDeepseekModel(),
+    ctx([
+      { role: "user", content: "q", timestamp: 0 },
+      assistant,
+      { role: "user", content: "follow-up", timestamp: 0 },
+    ]),
+    {},
+    DEEPSEEK_COMPAT,
+  );
+  const messages = payload["messages"] as Array<Record<string, unknown>>;
+  const am = messages[2]!;
+  expect(am).not.toHaveProperty("reasoning_content");
+});
+
 test("non-thinking model does not get reasoning_content even if compat declares the field", () => {
   // Guard: the gate on `supportsThinking(model)` keeps us from sending the
   // field to providers/models that don't accept it (e.g. vanilla OpenAI
