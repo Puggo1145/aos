@@ -306,13 +306,10 @@ struct OpenedPanelView: View {
 
     private var history: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 20) {
                 ForEach(agentService.turns) { turn in
                     turnRow(turn)
                         .id(turn.id)
-                        // New turns slide in from below — that's the
-                        // direction they conceptually come from (the
-                        // input row at the bottom).
                         .transition(.asymmetric(
                             insertion: .move(edge: .bottom).combined(with: .opacity),
                             removal: .opacity
@@ -471,16 +468,7 @@ struct OpenedPanelView: View {
             }
         case .reply(let s):
             if !s.text.isEmpty {
-                // Reply is untrusted LLM output. Disable network image
-                // providers so a model-emitted `![](https://…)` cannot turn
-                // the Notch UI into an outbound beacon (prompt injection →
-                // IP/online-state/timing leak via image GET).
-                Markdown(s.text)
-                    .markdownTheme(.aosNotchPanel)
-                    .markdownImageProvider(BlockedImageProvider())
-                    .markdownInlineImageProvider(BlockedInlineImageProvider())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                ReplyMarkdownView(text: s.text)
             }
         }
     }
@@ -514,6 +502,25 @@ struct OpenedPanelView: View {
         case .done, .idle:
             return turn.reply.isEmpty ? ":|" : ":D"
         }
+    }
+}
+
+// MARK: - ReplyMarkdownView
+//
+// Equatable wrapper around MarkdownUI's `Markdown` so SwiftUI skips re-
+// parsing when the reply text hasn't changed. Without this, every streaming
+// token on the *last* turn re-evaluates `Markdown(s.text)` for every
+// *visible* turn — O(visible × tokens) markdown parses per turn.
+private struct ReplyMarkdownView: View, Equatable {
+    let text: String
+
+    var body: some View {
+        Markdown(text)
+            .markdownTheme(.aosNotchPanel)
+            .markdownImageProvider(BlockedImageProvider())
+            .markdownInlineImageProvider(BlockedInlineImageProvider())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 }
 

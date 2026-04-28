@@ -171,38 +171,33 @@ struct ThinkingView: View {
             .accessibilityLabel(Text(elapsedLabel))
             .accessibilityHint(Text(expanded ? "Hides reasoning trace" : "Shows reasoning trace"))
 
-            // Single fixed container for the expanded trace. Collapsed it
-            // animates its frame height to 0 and clips; expanded it grows
-            // to `expandedMaxHeight`. Keeping the container in the tree
-            // (rather than `if expanded { ... }` with a transition) means
-            // the surrounding layout sees a continuous height interpolation
-            // — the visual effect is "the content reveals from inside a
-            // fixed slot" instead of a separate view sliding+fading in.
-            ScrollView {
-                Text(thinking)
-                    .font(.system(size: Self.fontSize, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: ExpandedContentHeightKey.self,
-                                value: geo.size.height
-                            )
-                        }
-                    )
-            }
-            .frame(height: expanded ? min(expandedContentHeight, Self.expandedMaxHeight) : 0)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.white.opacity(expanded ? 0.04 : 0.0))
-            )
-            .clipped()
-            .onPreferenceChange(ExpandedContentHeightKey.self) { h in
-                expandedContentHeight = h
+            if expanded {
+                ScrollView {
+                    Text(thinking)
+                        .font(.system(size: Self.fontSize, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: ExpandedContentHeightKey.self,
+                                    value: geo.size.height
+                                )
+                            }
+                        )
+                }
+                .frame(height: min(expandedContentHeight, Self.expandedMaxHeight))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.04))
+                )
+                .clipped()
+                .onPreferenceChange(ExpandedContentHeightKey.self) { h in
+                    expandedContentHeight = h
+                }
             }
         }
     }

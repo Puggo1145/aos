@@ -103,36 +103,33 @@ struct ToolCallView: View {
             .accessibilityLabel(Text(headerLabel))
             .accessibilityHint(Text(expanded ? "Hides tool details" : "Shows tool details"))
 
-            // Single fixed slot for the expanded body. Animating the slot's
-            // height to 0 (instead of conditionally inserting/removing the
-            // view) keeps the surrounding panel layout on a continuous height
-            // interpolation — matching ThinkingView's "reveal from inside a
-            // fixed slot" effect.
-            ScrollView {
-                Text(bodyText)
-                    .font(.system(size: Self.fontSize, weight: .regular, design: .monospaced))
-                    .foregroundStyle(bodyForeground)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: ToolCallContentHeightKey.self,
-                                value: geo.size.height
-                            )
-                        }
-                    )
-            }
-            .frame(height: expanded ? min(contentHeight, Self.expandedMaxHeight) : 0)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.white.opacity(expanded ? 0.04 : 0.0))
-            )
-            .clipped()
-            .onPreferenceChange(ToolCallContentHeightKey.self) { h in
-                contentHeight = h
+            if expanded {
+                ScrollView {
+                    Text(bodyText)
+                        .font(.system(size: Self.fontSize, weight: .regular, design: .monospaced))
+                        .foregroundStyle(bodyForeground)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: ToolCallContentHeightKey.self,
+                                    value: geo.size.height
+                                )
+                            }
+                        )
+                }
+                .frame(height: min(contentHeight, Self.expandedMaxHeight))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.04))
+                )
+                .clipped()
+                .onPreferenceChange(ToolCallContentHeightKey.self) { h in
+                    contentHeight = h
+                }
             }
         }
     }
