@@ -40,13 +40,17 @@ struct OpenedPanelView: View {
     let senseStore: SenseStore
     let agentService: AgentService
     let visualCapturePolicyStore: VisualCapturePolicyStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Last turn count observed by the history-height preference handler.
-    /// Used to distinguish streaming growth (count unchanged → suppress the
-    /// panel's height animation so the viewport stays in lockstep with the
-    /// content) from new-turn insertion (count changed → keep the existing
-    /// `.smooth` animation that lets the panel ease open).
-    @State private var lastObservedTurnCount: Int = 0
+    /// Last turn id observed by the history-height measurement. New turns
+    /// are detected after layout, then the scroll view is snapped to the
+    /// bottom once the bottom anchor exists.
+    @State private var lastMeasuredTurnID: String?
+    @State private var pendingHistoryScroll: DispatchWorkItem?
+    @State private var pendingFollowDisable: DispatchWorkItem?
+    @State private var historyViewportHeight: CGFloat = 0
+    @State private var historyBottomMaxY: CGFloat = 0
+    @State private var shouldFollowLiveOutput: Bool = true
 
     /// Top safe area equal to the physical notch height. The opened panel
     /// extends to the very top of the screen, so any content inside the
@@ -63,6 +67,7 @@ struct OpenedPanelView: View {
     /// the hardware notch (top). Keeping leading / trailing / bottom equal
     /// keeps the panel reading as evenly framed.
     private let edgePadding: CGFloat = 16
+    private let historyScrollAnimationDuration: TimeInterval = 0.26
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -72,13 +77,18 @@ struct OpenedPanelView: View {
         .frame(width: viewModel.notchOpenedSize.width,
                height: viewModel.notchOpenedSize.height)
         .animation(.smooth(duration: 0.28), value: hasSession)
-        .animation(.smooth(duration: 0.28), value: agentService.turns.count)
         .onChange(of: hasSession) { _, active in
             // Drop stale measurements when the conversation resets so the
             // panel collapses back to compact instead of inheriting the last
             // session's height.
             if !active {
                 viewModel.historyContentHeight = 0
+                lastMeasuredTurnID = nil
+                shouldFollowLiveOutput = true
+                pendingHistoryScroll?.cancel()
+                pendingHistoryScroll = nil
+                pendingFollowDisable?.cancel()
+                pendingFollowDisable = nil
             }
         }
     }
@@ -305,94 +315,142 @@ struct OpenedPanelView: View {
     }
 
     private var history: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                ForEach(agentService.turns) { turn in
-                    turnRow(turn)
-                        .id(turn.id)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .opacity
-                        ))
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ForEach(agentService.turns) { turn in
+                            turnRow(turn)
+                                .id(turn.id)
+                        }
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(HistoryScrollAnchor.bottom)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: HistoryBottomMaxYKey.self,
+                                    value: geo.frame(in: .named(HistoryCoordinateSpace.viewport)).maxY
+                                )
+                            }
+                        )
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                // Measured *inside* the ScrollView so we read the content's
+                // natural (unconstrained) height; the parent ScrollView lets the
+                // VStack be as tall as it wants. The viewmodel uses this to
+                // grow the silhouette toward `notchOpenedMaxHeight`.
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: HistoryHeightKey.self, value: geo.size.height)
+                    }
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            // Measured *inside* the ScrollView so we read the content's
-            // natural (unconstrained) height; the parent ScrollView lets the
-            // VStack be as tall as it wants. The viewmodel uses this to
-            // grow the silhouette toward `notchOpenedMaxHeight`.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .coordinateSpace(name: HistoryCoordinateSpace.viewport)
             .background(
                 GeometryReader { geo in
-                    Color.clear.preference(key: HistoryHeightKey.self, value: geo.size.height)
+                    Color.clear.preference(key: HistoryViewportHeightKey.self, value: geo.size.height)
                 }
             )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Pin the scroll position to the bottom so newly submitted prompts
-        // and streaming replies stay fully visible without manual scroll
-        // management. Once the conversation exceeds `notchOpenedMaxHeight`,
-        // the user can scroll up to read older turns.
-        .defaultScrollAnchor(.bottom)
-        .onPreferenceChange(HistoryHeightKey.self) { h in
-            // Per-token streaming grows the inner VStack one frame before
-            // the parent's `notchOpenedSize.height` (and thus the ScrollView
-            // viewport) catches up. NotchView animates that height change
-            // over 0.32s; during the animation the content is taller than
-            // the viewport, so `.defaultScrollAnchor(.bottom)` pins to the
-            // bottom and the older content visually scrolls up, then slides
-            // back down as the viewport finishes growing — the "上顶/回弹".
-            //
-            // Suppress the height animation while a turn is live (count
-            // unchanged) so panel + viewport grow in the same frame as the
-            // content. New-turn insertion changes the count, so its
-            // preference update flows through with the normal `.smooth`
-            // height animation intact and the panel still eases open.
-            //
-            // The signal is "last turn is in a non-terminal status" rather
-            // than "reply.count grew since last fire". A single token can
-            // produce multiple preference fires (sub-pixel relayout after
-            // the parent frame catches up); a delta-based discriminator
-            // that advances its baseline on the first fire would miss the
-            // follow-up fires and let them through the animated path,
-            // which is exactly the bounce. The status-based signal is
-            // stable across fires for the duration of the streaming turn.
-            //
-            // Other intra-turn height changes (the user expands/collapses
-            // a *settled* thinking trace on an older turn, an error
-            // banner appears, the status emoji swaps) leave the last
-            // turn in a terminal status (`.done` / `.error` / `.idle`)
-            // so they fall through to the normal `.smooth(0.32)` path,
-            // matching the silhouette's animation curve.
-            //
-            // Round h to integer points to suppress sub-pixel jitter from
-            // SwiftUI's per-frame relayout — same pattern as
-            // OnboardingMeasurement / SettingsMeasurement. Real content
-            // changes are always >> 1pt and still flow through.
-            let count = agentService.turns.count
-            let isLastTurnLive: Bool = {
-                guard let last = agentService.turns.last else { return false }
-                switch last.status {
-                case .working, .waiting: return true
-                case .idle, .listening, .done, .error: return false
-                }
-            }()
-            let isStreamingUpdate = count == lastObservedTurnCount && isLastTurnLive
-            let rounded = h.rounded()
-            if isStreamingUpdate {
-                var txn = Transaction()
-                txn.disablesAnimations = true
-                withTransaction(txn) {
-                    if viewModel.historyContentHeight != rounded {
-                        viewModel.historyContentHeight = rounded
-                    }
-                }
-            } else {
+            .onPreferenceChange(HistoryViewportHeightKey.self) { h in
+                historyViewportHeight = h.rounded()
+                updateLiveOutputFollowState()
+            }
+            .onPreferenceChange(HistoryBottomMaxYKey.self) { y in
+                historyBottomMaxY = y.rounded()
+                updateLiveOutputFollowState()
+            }
+            .onPreferenceChange(HistoryHeightKey.self) { h in
+                let rounded = h.rounded()
                 if viewModel.historyContentHeight != rounded {
                     viewModel.historyContentHeight = rounded
                 }
-                lastObservedTurnCount = count
+
+                let turnID = agentService.turns.last?.id
+                let didAppendTurn = turnID != lastMeasuredTurnID
+                lastMeasuredTurnID = turnID
+
+                if didAppendTurn {
+                    shouldFollowLiveOutput = true
+                }
+
+                guard isHistoryInternallyScrollable(contentHeight: rounded) else { return }
+                if didAppendTurn {
+                    scrollHistoryToBottom(proxy, animated: true)
+                } else if isLastTurnLive && shouldFollowLiveOutput {
+                    scrollHistoryToBottom(proxy, animated: false)
+                }
             }
         }
+    }
+
+    private var isLastTurnLive: Bool {
+        guard let last = agentService.turns.last else { return false }
+        switch last.status {
+        case .working, .waiting: return true
+        case .idle, .listening, .done, .error: return false
+        }
+    }
+
+    private func isHistoryInternallyScrollable(contentHeight: CGFloat) -> Bool {
+        let maxHistoryViewport = viewModel.notchOpenedMaxHeight
+            - viewModel.openedContentVerticalChrome
+            - viewModel.composerContentHeight
+        return contentHeight > maxHistoryViewport.rounded(.down)
+    }
+
+    private func updateLiveOutputFollowState() {
+        guard isHistoryInternallyScrollable(contentHeight: viewModel.historyContentHeight) else {
+            shouldFollowLiveOutput = true
+            pendingFollowDisable?.cancel()
+            pendingFollowDisable = nil
+            return
+        }
+
+        let isAtBottom = historyBottomMaxY <= historyViewportHeight + 4
+        if isAtBottom {
+            shouldFollowLiveOutput = true
+            pendingFollowDisable?.cancel()
+            pendingFollowDisable = nil
+            return
+        }
+
+        guard pendingHistoryScroll == nil else { return }
+        pendingFollowDisable?.cancel()
+        let workItem = DispatchWorkItem {
+            shouldFollowLiveOutput = false
+            pendingFollowDisable = nil
+        }
+        pendingFollowDisable = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
+    }
+
+    private func scrollHistoryToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        pendingHistoryScroll?.cancel()
+        pendingFollowDisable?.cancel()
+        pendingFollowDisable = nil
+        let workItem = DispatchWorkItem {
+            if animated && !reduceMotion {
+                withAnimation(.smooth(duration: historyScrollAnimationDuration, extraBounce: 0)) {
+                    proxy.scrollTo(HistoryScrollAnchor.bottom, anchor: .bottom)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + historyScrollAnimationDuration) {
+                    pendingHistoryScroll = nil
+                }
+            } else {
+                var txn = Transaction()
+                txn.disablesAnimations = true
+                withTransaction(txn) {
+                    proxy.scrollTo(HistoryScrollAnchor.bottom, anchor: .bottom)
+                }
+                pendingHistoryScroll = nil
+            }
+        }
+        pendingHistoryScroll = workItem
+        DispatchQueue.main.async(execute: workItem)
     }
 
     /// One historical turn = compressed header + reply block + (optional
@@ -504,6 +562,14 @@ struct OpenedPanelView: View {
     }
 }
 
+private enum HistoryScrollAnchor: Hashable {
+    case bottom
+}
+
+private enum HistoryCoordinateSpace: Hashable {
+    case viewport
+}
+
 // MARK: - ReplyMarkdownView
 //
 // Equatable wrapper around MarkdownUI's `Markdown` so SwiftUI skips re-
@@ -529,6 +595,20 @@ private struct HistoryHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private struct HistoryViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct HistoryBottomMaxYKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -637,4 +717,3 @@ private struct BlockedInlineImageProvider: InlineImageProvider {
         throw Blocked()
     }
 }
-
