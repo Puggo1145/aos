@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AOSRPCSchema
 
 // MARK: - RPCClient
@@ -68,19 +69,24 @@ public final class RPCClient: @unchecked Sendable {
     private let outbound: FileHandle
 
     /// Pending request continuations. Each key is the RPCId we sent.
-    private var pending: [RPCId: CheckedContinuation<Data, Error>] = [:]
-    private let pendingLock = NSLock()
+    /// `OSAllocatedUnfairLock<State>` instead of NSLock + raw var so the
+    /// state and the lock guarding it are inseparable — Swift 6 strict
+    /// concurrency can prove the access is serialized without `@unchecked
+    /// Sendable` relying on convention.
+    private let pendingLock = OSAllocatedUnfairLock<[RPCId: CheckedContinuation<Data, Error>]>(
+        initialState: [:]
+    )
 
-    /// Notification handlers keyed by method name. Handlers are invoked in
-    /// detached Tasks so they don't block the reader.
-    private var notificationHandlers: [String: NotificationHandler] = [:]
-    private let handlersLock = NSLock()
-
-    /// Inbound-request handlers keyed by method name. See
-    /// `registerRequestHandler` for the registration helper. Lives behind
-    /// the same lock as `notificationHandlers` to keep the registry
-    /// reads/writes coherent.
-    private var requestHandlers: [String: RequestHandler] = [:]
+    /// Notification + inbound-request handler registries. Both share one lock
+    /// so registry reads/writes stay coherent (handle() peeks `method` then
+    /// looks up either map).
+    private struct HandlerRegistry {
+        var notifications: [String: NotificationHandler] = [:]
+        var requests: [String: RequestHandler] = [:]
+    }
+    private let handlerRegistry = OSAllocatedUnfairLock<HandlerRegistry>(
+        initialState: HandlerRegistry()
+    )
 
     private let writeQueue = DispatchQueue(label: "aos.rpc.write")
     private var readerStopped = false
@@ -132,24 +138,24 @@ public final class RPCClient: @unchecked Sendable {
         notificationContinuation?.finish()
         notificationContinuation = nil
         notificationConsumer = nil
-        // Close the inbound handle so the synchronous `read()` in runReader
-        // returns EOF and the reader thread exits.
-        try? inbound.close()
-        // Close the inbound handle so the synchronous `read()` in runReader
-        // returns EOF and the detached reader Task exits. Without this the
-        // reader holds a cooperative thread indefinitely (Swift Testing
-        // waits on all live tasks before completing).
+        // Close the inbound handle so the synchronous `read()` in
+        // `runReaderSync` returns EOF and the reader queue's iteration
+        // exits. Without this the reader holds a cooperative thread
+        // indefinitely (Swift Testing waits on all live tasks before
+        // completing).
         try? inbound.close()
         // Fail every pending continuation so callers don't hang.
-        let snapshot: [RPCId: CheckedContinuation<Data, Error>] = {
-            pendingLock.lock(); defer { pendingLock.unlock() }
+        let snapshot = pendingLock.withLock { pending -> [RPCId: CheckedContinuation<Data, Error>] in
             let s = pending
             pending.removeAll()
             return s
-        }()
+        }
         for (_, cont) in snapshot {
             cont.resume(throwing: RPCClientError.connectionClosed)
         }
+        // Resolve any pending handshake awaiter with `connectionClosed`
+        // so a `start()` → `stop()` race never leaves a Task suspended.
+        resolveHandshake(.failure(RPCClientError.connectionClosed))
     }
 
     // MARK: - Notification handler registry
@@ -171,9 +177,7 @@ public final class RPCClient: @unchecked Sendable {
                 )
             }
         }
-        handlersLock.lock()
-        notificationHandlers[method] = raw
-        handlersLock.unlock()
+        handlerRegistry.withLock { $0.notifications[method] = raw }
     }
 
     // MARK: - Inbound request handler registry
@@ -231,9 +235,7 @@ public final class RPCClient: @unchecked Sendable {
                 return nil
             }
         }
-        handlersLock.lock()
-        requestHandlers[method] = raw
-        handlersLock.unlock()
+        handlerRegistry.withLock { $0.requests[method] = raw }
     }
 
     // MARK: - Outbound: typed request
@@ -266,15 +268,20 @@ public final class RPCClient: @unchecked Sendable {
 
         let resolvedTimeout = timeout ?? Self.timeout(forMethod: method)
 
-        let data: Data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            pendingLock.lock()
-            pending[id] = cont
-            pendingLock.unlock()
+        // Hoist the timeout Task so the success path cancels it instead of
+        // letting it sleep for the full window. Without this, every
+        // successful request leaks one sleeping detached Task per the full
+        // timeout window — at the streaming notification rate this
+        // accumulates fast.
+        var timeoutTask: Task<Void, Never>?
+        defer { timeoutTask?.cancel() }
 
-            // Schedule a timeout.
-            Task.detached { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(resolvedTimeout * 1_000_000_000))
-                guard let self else { return }
+        let data: Data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            pendingLock.withLock { $0[id] = cont }
+
+            timeoutTask = Task.detached { [weak self] in
+                try? await Task.sleep(for: .seconds(resolvedTimeout))
+                guard !Task.isCancelled, let self else { return }
                 let waiting = self.removePending(id)
                 waiting?.resume(throwing: RPCClientError.timeout(method: method))
             }
@@ -314,17 +321,89 @@ public final class RPCClient: @unchecked Sendable {
     /// suspends until the first valid `rpc.hello` Request has been observed
     /// and replied to.
     public func awaitHandshake(timeout: TimeInterval = 5) async throws -> HelloResult {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if let result = handshakeResult {
-                return result
+        // Race the suspended handshake gate against a timeout Task. The
+        // suspended path returns as soon as `resolveHandshake(_:)` is
+        // called from the inbound dispatcher; the timeout path throws
+        // `RPCClientError.timeout` if the sidecar never sends `rpc.hello`.
+        // Either path cancels the other on completion.
+        return try await withThrowingTaskGroup(of: HelloResult.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { throw RPCClientError.connectionClosed }
+                return try await self.suspendForHandshake()
             }
-            try await Task.sleep(nanoseconds: 50_000_000) // 50ms poll
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw RPCClientError.timeout(method: RPCMethod.rpcHello)
+            }
+            do {
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
         }
-        throw RPCClientError.timeout(method: RPCMethod.rpcHello)
     }
 
-    private var handshakeResult: HelloResult?
+    /// Suspend on the handshake gate. Returns immediately if the sidecar
+    /// already sent `rpc.hello`; otherwise registers a continuation
+    /// resolved by `resolveHandshake(_:)` from the inbound dispatcher.
+    private func suspendForHandshake() async throws -> HelloResult {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HelloResult, Error>) in
+            handshakeState.withLock { state in
+                if let result = state.result {
+                    cont.resume(returning: result)
+                    return
+                }
+                if let failed = state.failure {
+                    cont.resume(throwing: failed)
+                    return
+                }
+                // Two concurrent awaiters would be a programmer error;
+                // resolve the prior one with cancellation so it surfaces
+                // rather than silently leaking.
+                if let prior = state.continuation {
+                    prior.resume(throwing: CancellationError())
+                }
+                state.continuation = cont
+            }
+        }
+    }
+
+    /// Called from the inbound-request dispatcher when the sidecar's
+    /// `rpc.hello` has been observed and answered (success) — or rejected
+    /// for MAJOR-version mismatch (failure). Caches the outcome so any
+    /// later `awaitHandshake()` returns synchronously, and resolves any
+    /// already-suspended awaiter.
+    private func resolveHandshake(_ outcome: Result<HelloResult, Error>) {
+        let pending: CheckedContinuation<HelloResult, Error>? = handshakeState.withLock { state in
+            switch outcome {
+            case .success(let r):
+                state.result = r
+                state.failure = nil
+            case .failure(let e):
+                state.failure = e
+                state.result = nil
+            }
+            let c = state.continuation
+            state.continuation = nil
+            return c
+        }
+        if let pending {
+            switch outcome {
+            case .success(let r): pending.resume(returning: r)
+            case .failure(let e): pending.resume(throwing: e)
+            }
+        }
+    }
+
+    private struct HandshakeState {
+        var result: HelloResult?
+        var failure: Error?
+        var continuation: CheckedContinuation<HelloResult, Error>?
+    }
+    private let handshakeState = OSAllocatedUnfairLock<HandshakeState>(initialState: HandshakeState())
 
     // MARK: - Outbound writer
 
@@ -439,10 +518,11 @@ public final class RPCClient: @unchecked Sendable {
     }
 
     private func failAllPending(_ error: Error) {
-        pendingLock.lock()
-        let snapshot = pending
-        pending.removeAll()
-        pendingLock.unlock()
+        let snapshot = pendingLock.withLock { pending -> [RPCId: CheckedContinuation<Data, Error>] in
+            let s = pending
+            pending.removeAll()
+            return s
+        }
         for (_, cont) in snapshot {
             cont.resume(throwing: error)
         }
@@ -462,17 +542,13 @@ public final class RPCClient: @unchecked Sendable {
         if probe.id != nil, probe.method == nil {
             // It's a Response (success or error) — resolve pending continuation.
             guard let id = probe.id else { return }
-            pendingLock.lock()
-            let cont = pending.removeValue(forKey: id)
-            pendingLock.unlock()
+            let cont = pendingLock.withLock { $0.removeValue(forKey: id) }
             cont?.resume(returning: line)
             return
         }
         if let method = probe.method, probe.id == nil {
             // Notification.
-            handlersLock.lock()
-            let handler = notificationHandlers[method]
-            handlersLock.unlock()
+            let handler = handlerRegistry.withLock { $0.notifications[method] }
             if let handler {
                 // Hand off to the serial consumer so handlers run in arrival
                 // order. Critical for streaming `ui.token` deltas: detached
@@ -514,7 +590,10 @@ public final class RPCClient: @unchecked Sendable {
                         )
                     )
                     if let data = try? Self.encodeLine(err) { write(line: data) }
-                    handshakeResult = nil
+                    resolveHandshake(.failure(RPCClientError.protocolMajorMismatch(
+                        remote: req.params.protocolVersion,
+                        local: aosProtocolVersion
+                    )))
                     return
                 }
                 let result = HelloResult(
@@ -523,7 +602,7 @@ public final class RPCClient: @unchecked Sendable {
                 )
                 let resp = RPCResponse(id: req.id, result: result)
                 if let data = try? Self.encodeLine(resp) { write(line: data) }
-                handshakeResult = result
+                resolveHandshake(.success(result))
             } catch {
                 FileHandle.standardError.write(
                     Data("[rpc] failed to decode rpc.hello: \(error)\n".utf8)
@@ -535,9 +614,7 @@ public final class RPCClient: @unchecked Sendable {
         // handler runs in this detached Task so concurrent inbound
         // requests don't serialise behind one another — per
         // docs/designs/rpc-protocol.md §"Dispatcher 并发模型".
-        handlersLock.lock()
-        let handler = requestHandlers[method]
-        handlersLock.unlock()
+        let handler = handlerRegistry.withLock { $0.requests[method] }
         if let handler {
             if let response = await handler(line) {
                 write(line: response)
@@ -561,9 +638,7 @@ public final class RPCClient: @unchecked Sendable {
     // MARK: - Utilities
 
     private func removePending(_ id: RPCId) -> CheckedContinuation<Data, Error>? {
-        pendingLock.lock()
-        defer { pendingLock.unlock() }
-        return pending.removeValue(forKey: id)
+        pendingLock.withLock { $0.removeValue(forKey: id) }
     }
 
     /// Per-method timeouts from rpc-protocol.md "Dispatcher 并发模型" table.

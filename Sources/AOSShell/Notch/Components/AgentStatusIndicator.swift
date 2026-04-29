@@ -26,15 +26,19 @@ struct AgentStatusIndicator: View {
     var body: some View {
         Group {
             if let name = activeToolName {
-                ToolIconBadge(symbolName: ToolUIRegistry.presenter(for: name).icon)
-                    .id(name)
-                    .transition(.opacity)
+                let presenter = ToolUIRegistry.presenter(for: name)
+                ToolIconBadge(
+                    symbolName: presenter.icon,
+                    toolName: name
+                )
+                .id(name)
+                .transition(.opacity)
             } else {
                 StatusEmojiView(status: status, size: .small)
                     .transition(.opacity)
             }
         }
-        .animation(.smooth(duration: 0.2, extraBounce: 0), value: activeToolName)
+        .animation(.notchChrome, value: activeToolName)
     }
 }
 
@@ -48,7 +52,12 @@ struct AgentStatusIndicator: View {
 
 private struct ToolIconBadge: View {
     let symbolName: String
+    /// The agent-facing tool name (e.g. "bash", "read"). Used for VoiceOver
+    /// — without this we'd read the raw SF Symbol identifier, which is
+    /// incomprehensible (e.g. "Using cursorarrow.click").
+    let toolName: String
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
 
     var body: some View {
@@ -61,12 +70,16 @@ private struct ToolIconBadge: View {
             .font(.system(size: 12, weight: .medium))
             .symbolRenderingMode(.monochrome)
             .foregroundStyle(.white.opacity(0.55))
-            .opacity(pulse ? 0.4 : 1.0)
+            .opacity(reduceMotion ? 1.0 : (pulse ? 0.4 : 1.0))
             .animation(
-                .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                reduceMotion ? .default : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
                 value: pulse
             )
-            .onAppear { pulse = true }
-            .accessibilityLabel(Text("Using \(symbolName)"))
+            .onAppear { pulse = !reduceMotion }
+            .onDisappear { pulse = false }
+            .onChange(of: reduceMotion) { _, newValue in
+                pulse = !newValue
+            }
+            .accessibilityLabel(Text("Using \(toolName)"))
     }
 }

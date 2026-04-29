@@ -155,7 +155,7 @@ public final class GeneralProbe {
     private func scheduleSelectedTextDebounce() {
         selectedTextDebounce?.cancel()
         selectedTextDebounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             if Task.isCancelled { return }
             self?.recompute()
         }
@@ -164,7 +164,7 @@ public final class GeneralProbe {
     private func scheduleSelectedItemsDebounce() {
         selectedItemsDebounce?.cancel()
         selectedItemsDebounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             if Task.isCancelled { return }
             self?.recompute()
         }
@@ -173,7 +173,7 @@ public final class GeneralProbe {
     private func scheduleCurrentInputDebounce() {
         currentInputDebounce?.cancel()
         currentInputDebounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(for: .milliseconds(250))
             if Task.isCancelled { return }
             self?.recompute()
         }

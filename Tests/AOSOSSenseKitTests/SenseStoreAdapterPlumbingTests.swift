@@ -49,7 +49,7 @@ private actor SlowAttachAdapter: SenseAdapter {
         // on us. When the surrounding TaskGroup cancels, the sleep throws
         // CancellationError → swallowed, then we still return a stream
         // that nobody is listening to.
-        try? await Task.sleep(nanoseconds: 700_000_000)
+        try? await Task.sleep(for: .milliseconds(700))
         return AsyncStream { _ in }
     }
 
@@ -172,7 +172,7 @@ struct SenseStoreAdapterPlumbingTests {
 
         // Drive an emission and confirm it surfaces in context.behaviors.
         await mock.emit([envelope("m:1", "first")])
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(for: .milliseconds(50))
         #expect(store.context.behaviors.contains { $0.citationKey == "m:1" })
     }
 
@@ -187,7 +187,7 @@ struct SenseStoreAdapterPlumbingTests {
         )
         await store._awaitPendingAdapterSwapForTesting()
         await mock.emit([envelope("m:1", "first")])
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(for: .milliseconds(50))
         #expect(store.context.behaviors.contains { $0.citationKey == "m:1" })
 
         // Switch to an app whose bundleId nobody covers.
@@ -308,7 +308,7 @@ struct SenseStoreAdapterPlumbingTests {
         for _ in 0..<10 {
             await Task.yield()
         }
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(for: .milliseconds(50))
 
         #expect(store._attachedAdapterOrderForTesting == ["order.a", "order.b", "order.c"])
         let keys = store.context.behaviors.map { $0.citationKey }

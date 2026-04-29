@@ -145,7 +145,7 @@ private final class Dispatcher: @unchecked Sendable {
 
         let delayNs = suppressionDelayNs
         let task = Task.detached {
-            try? await Task.sleep(nanoseconds: delayNs)
+            try? await Task.sleep(for: .nanoseconds(delayNs))
             await MainActor.run {
                 _ = restoreTo.activate(options: [])
             }

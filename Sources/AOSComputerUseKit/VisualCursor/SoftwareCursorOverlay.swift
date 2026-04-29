@@ -256,8 +256,13 @@ enum SoftwareCursorOverlay {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.animationBehavior = .none
+        // The cursor panel is purely decorative — it must not appear in
+        // the accessibility hierarchy or VoiceOver will land focus on it
+        // while the agent operates apps.
+        panel.setAccessibilityElement(false)
 
         let view = SoftwareCursorView(frame: CGRect(origin: .zero, size: artwork.geometry.windowSize))
+        view.setAccessibilityElement(false)
         panel.contentView = view
 
         self.panel = panel

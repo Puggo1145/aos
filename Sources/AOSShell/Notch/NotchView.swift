@@ -109,15 +109,15 @@ struct NotchView: View {
         // instant resize instead of a 0.32s ease — and the inner ThinkingView
         // (which also honours the setting) stays in lockstep with the outer
         // silhouette.
-        .animation(reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0),
+        .animation(reduceMotion ? nil : .notchHeight,
                    value: viewModel.notchOpenedSize.height)
         // Tray drawer slides in/out smoothly when notices appear / are
         // dismissed. Driving on `trayHeight` (a derived CGFloat) keeps the
         // background-silhouette growth and the content fade on the same
         // timeline.
-        .animation(reduceMotion ? nil : .smooth(duration: 0.28),
+        .animation(reduceMotion ? nil : .notchChrome,
                    value: trayHeight)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.28),
+        .animation(reduceMotion ? nil : .notchChrome,
                    value: viewModel.trayExpanded)
     }
 
@@ -133,10 +133,10 @@ struct NotchView: View {
         ZStack(alignment: .top) {
             if viewModel.status == .opened {
                 openedContent
-                    .animation(.smooth(duration: 0.32), value: viewModel.showSettings)
-                    .animation(.smooth(duration: 0.32), value: viewModel.showHistory)
-                    .animation(.smooth(duration: 0.32), value: viewModel.providerService.hasReadyProvider)
-                    .animation(.smooth(duration: 0.32), value: viewModel.permissionsService.allGranted)
+                    .animation(.notchHeight, value: viewModel.showSettings)
+                    .animation(.notchHeight, value: viewModel.showHistory)
+                    .animation(.notchHeight, value: viewModel.providerService.hasReadyProvider)
+                    .animation(.notchHeight, value: viewModel.permissionsService.allGranted)
             }
 
             if viewModel.status != .opened {

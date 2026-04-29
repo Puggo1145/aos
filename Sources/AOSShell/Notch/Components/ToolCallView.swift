@@ -80,7 +80,7 @@ struct ToolCallView: View {
                     // (`.smooth(0.32)` in NotchView) so the expansion eases
                     // in lockstep with the outer container growing — same
                     // contract ThinkingView documents above.
-                    withAnimation(.smooth(duration: 0.32, extraBounce: 0)) {
+                    withAnimation(.notchHeight) {
                         expanded.toggle()
                     }
                 }
@@ -88,15 +88,15 @@ struct ToolCallView: View {
                 HStack(spacing: 6) {
                     Image(systemName: presenter.icon)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
                     Text(headerLabel)
                         .font(.system(size: Self.fontSize, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .animation(reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0), value: expanded)
+                        .animation(reduceMotion ? nil : .notchHeight, value: expanded)
                 }
             }
             .buttonStyle(.plain)

@@ -38,7 +38,7 @@ struct BentoPickerCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(caption)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .notchForeground(.tertiary)
                     .textCase(.uppercase)
                     .tracking(0.4)
 
@@ -51,7 +51,7 @@ struct BentoPickerCard: View {
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .notchForeground(.quaternary)
                 }
             }
             .padding(.horizontal, 14)

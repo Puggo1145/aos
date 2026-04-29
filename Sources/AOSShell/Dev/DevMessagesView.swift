@@ -90,7 +90,8 @@ struct DevMessagesView: View {
         pasteboard.clearContents()
         pasteboard.setString(messagesJson, forType: .string)
         copyFeedback = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1200))
             copyFeedback = false
         }
     }

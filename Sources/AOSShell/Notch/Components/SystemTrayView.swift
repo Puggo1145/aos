@@ -164,11 +164,11 @@ struct SystemTrayView: View {
         } label: {
             Image(systemName: viewModel.trayExpanded ? "chevron.up" : "chevron.down")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.55))
-                .frame(width: 18, height: 18)
+                .notchForeground(.secondary)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notchPressable)
         .accessibilityLabel(viewModel.trayExpanded ? "Collapse notices" : "Expand notices")
     }
 }

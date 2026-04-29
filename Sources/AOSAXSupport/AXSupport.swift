@@ -43,3 +43,22 @@ public func axWindowID(for element: AXUIElement) -> CGWindowID? {
     let err = _AXUIElementGetWindow(element, &windowId)
     return err == .success ? windowId : nil
 }
+
+// MARK: - Sendable conformance for shared AX CFTypes
+//
+// Apple has not annotated Sendable on AX CF types. Both AOSOSSenseKit and
+// AOSComputerUseKit hand AXUIElement / AXObserver across actor boundaries
+// (StateCache, ComputerUseService, AXObserverHub). The retroactive
+// conformance lives here — the only module both kits depend on — so a
+// single declaration governs both packages and avoids a duplicate
+// retroactive conformance when both modules link into the same binary
+// (which the Swift runtime treats as undefined).
+//
+// AXUIElement / AXObserver are CFTypes; CFRetain/CFRelease are documented
+// thread-safe. Read + perform + set ops we use against a single element
+// are not formally documented as concurrent-safe, so the conformance is
+// `@unchecked` — callers must still avoid concurrent mutating ops on the
+// same element from two actors.
+
+extension AXUIElement: @retroactive @unchecked Sendable {}
+extension AXObserver: @retroactive @unchecked Sendable {}

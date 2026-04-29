@@ -208,7 +208,7 @@ struct OnboardPanelView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Stored locally in macOS Keychain.")
                     .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .notchForeground(.secondary)
 
                 SecureField("sk-…", text: apiKeyDraftBinding)
                     .textFieldStyle(.plain)
@@ -298,40 +298,48 @@ private struct ProviderCard: View {
     let onTap: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            if style == .loading || style == .inflight {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .controlSize(.small)
-                    .frame(width: 16, height: 16)
-            } else if style == .success {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else if style == .failed {
-                Image(systemName: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-            }
+        // Real `Button` so VoiceOver gets the button trait, Voice Control
+        // can target by name, and keyboard activation works. The previous
+        // `.onTapGesture` made the card invisible to assistive tech.
+        Button(action: onTap) {
+            HStack(spacing: 10) {
+                if style == .loading || style == .inflight {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else if style == .success {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else if style == .failed {
+                    Image(systemName: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(background)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(background)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onTapGesture { if enabled { onTap() } }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
         .opacity(enabled ? 1.0 : 0.85)
+        .accessibilityLabel(Text(name))
+        .accessibilityHint(Text(subtitle))
     }
 
     private var background: Color {

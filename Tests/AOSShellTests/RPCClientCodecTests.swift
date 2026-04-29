@@ -71,7 +71,7 @@ struct RPCClientCodecTests {
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline {
             if received.get() != nil { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await Task.sleep(for: .milliseconds(20))
         }
         let got = received.get()
         #expect(got?.turnId == "T1")
@@ -123,7 +123,7 @@ struct RPCClientCodecTests {
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
             if collected.get().count == n { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await Task.sleep(for: .milliseconds(20))
         }
 
         let got = collected.get()
@@ -230,7 +230,7 @@ struct RPCClientCodecTests {
 
         // Nothing should have hit the wire — the guard runs before write().
         // Poll briefly to make sure no deferred write sneaks in.
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(for: .milliseconds(100))
         let fd = serverRead.fileDescriptor
         var scratch = [UInt8](repeating: 0, count: 64)
         let n = scratch.withUnsafeMutableBufferPointer { ptr in
@@ -249,12 +249,12 @@ struct RPCClientCodecTests {
         #expect(RPCClient.majorVersion("garbage") == 0)
     }
 
-    @Test("rpc.hello inbound with MAJOR mismatch is rejected (no handshakeResult)")
+    @Test("rpc.hello inbound with MAJOR mismatch surfaces protocolMajorMismatch")
     func handshakeMajorMismatch() async throws {
         let (client, serverWrite, serverRead) = makeClient()
         defer { client.stop() }
 
-        // Send a hello with MAJOR = 99 (our local is "1.0.0").
+        // Send a hello with MAJOR = 99 (our local is "2.0.0").
         let req = RPCRequest(
             id: .string("hello-1"),
             method: RPCMethod.rpcHello,
@@ -265,13 +265,18 @@ struct RPCClientCodecTests {
         )
         try serverWrite.write(contentsOf: encodeLine(req))
 
-        // Client should reply with an error envelope. Wait for the handshake
-        // to time out (we pass a tight 0.5s) and assert it does.
+        // Client should reply with an invalidRequest error envelope AND
+        // surface a typed `protocolMajorMismatch` to the caller. The
+        // earlier polling-handshake implementation used to time out
+        // silently; the continuation-based gate now resolves the awaiter
+        // with the actionable mismatch error so the UI can show "please
+        // update" instead of "no response".
         do {
-            _ = try await client.awaitHandshake(timeout: 0.5)
-            Issue.record("expected timeout for MAJOR mismatch")
-        } catch RPCClientError.timeout {
-            // expected: client emitted error to peer, did not record success
+            _ = try await client.awaitHandshake(timeout: 2.0)
+            Issue.record("expected protocolMajorMismatch for MAJOR mismatch")
+        } catch RPCClientError.protocolMajorMismatch(let remote, let local) {
+            #expect(remote == "99.0.0")
+            #expect(local == aosProtocolVersion)
         } catch {
             Issue.record("unexpected error: \(error)")
         }
@@ -281,6 +286,185 @@ struct RPCClientCodecTests {
         let response = try await readOneLine(from: serverRead, timeout: 2)
         let errResp = try JSONDecoder().decode(RPCErrorResponse.self, from: response)
         #expect(errResp.error.code == RPCErrorCode.invalidRequest)
+    }
+
+    @Test("awaitHandshake resolves on matching protocol version with no polling delay")
+    func handshakeMatchingVersionResolves() async throws {
+        // NB: Retain `serverRead` for the lifetime of the test even if we
+        // don't read from it — the handshake handler writes the success
+        // response onto `outbound`, and dropping the read end of that
+        // pipe via `_` would close it and SIGPIPE the writer.
+        let (client, serverWrite, serverRead) = makeClient()
+        _ = serverRead
+        defer { client.stop() }
+
+        let req = RPCRequest(
+            id: .string("hello-ok"),
+            method: RPCMethod.rpcHello,
+            params: HelloParams(
+                protocolVersion: aosProtocolVersion,
+                clientInfo: ClientInfo(name: "fake", version: "0")
+            )
+        )
+        try serverWrite.write(contentsOf: encodeLine(req))
+
+        let result = try await client.awaitHandshake(timeout: 2.0)
+        #expect(result.protocolVersion == aosProtocolVersion)
+    }
+
+    @Test("oversized inbound NDJSON line aborts the reader and fails pending requests")
+    func oversizedInboundLineAbortsReader() async throws {
+        // The reader's 2 MiB single-line cap is what protects the Shell from
+        // a misbehaving sidecar (a runaway tool result, or a corrupted
+        // frame that never terminates). When it trips, every pending
+        // request must surface `payloadTooLarge` instead of hanging — the
+        // reader has decided the channel is unusable.
+        //
+        // Retain `serverRead` for the test's lifetime: the client may write
+        // an outbound frame (e.g. while the request was registering) and
+        // dropping the read end via `_` would close it and SIGPIPE the
+        // writer.
+        let (client, serverWrite, serverRead) = makeClient()
+        _ = serverRead
+        defer { client.stop() }
+
+        // Spawn an in-flight request first so the abort path has a
+        // continuation to fail.
+        let task = Task { () -> Result<PingResult, Error> in
+            do {
+                let r = try await client.request(
+                    method: RPCMethod.rpcPing,
+                    params: PingParams(),
+                    as: PingResult.self,
+                    timeout: 5
+                )
+                return .success(r)
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        // Brief yield so the request registers its pending continuation
+        // before we fire the oversize frame.
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Write exactly 2 MiB + 1 bytes with no embedded newline. The
+        // payload size matters: macOS pipe buffers cap around 64 KiB and
+        // the reader stops draining the moment its accumulator passes
+        // the cap. With a much larger payload (e.g. 3 MiB) the writer
+        // would hang on a kernel pipe full of un-drainable bytes — and
+        // even on a detached Task the eventual close()→SIGPIPE crashes
+        // the whole test process. 2 MiB + 1 is the minimum that trips
+        // the guard, and by the time the reader trips the writer has
+        // already handed off all bytes to the kernel buffer (no
+        // post-trip writes remain).
+        let oversized = Data(repeating: 0x78 /* 'x' */, count: 2 * 1024 * 1024 + 1)
+        try serverWrite.write(contentsOf: oversized)
+
+        let result = await task.value
+        switch result {
+        case .success:
+            Issue.record("expected oversized inbound to surface payloadTooLarge or connectionClosed")
+        case .failure(let error):
+            // Either is acceptable: payloadTooLarge if the reader trips
+            // the size guard before EOF, connectionClosed if the abort
+            // closes the pipe before the size check fires (e.g. on a
+            // particularly fast scheduler).
+            switch error {
+            case RPCClientError.payloadTooLarge, RPCClientError.connectionClosed:
+                break
+            default:
+                Issue.record("expected payloadTooLarge or connectionClosed, got \(error)")
+            }
+        }
+    }
+
+    @Test("stop() resolves all pending request continuations with connectionClosed")
+    func stopFailsPendingRequests() async throws {
+        // Retain both pipe ends — see the comment on
+        // `oversizedInboundLineAbortsReader`. Even on the stop() path,
+        // failAllPending could log via stderr and we want the writer side
+        // to stay valid until the test's defer runs.
+        let (client, serverWrite, serverRead) = makeClient()
+        _ = serverWrite
+        _ = serverRead
+
+        // Start two requests so we exercise the bulk-fail path and not just
+        // the single-pending case.
+        async let a: Result<PingResult, Error> = {
+            do {
+                return .success(try await client.request(
+                    method: RPCMethod.rpcPing,
+                    params: PingParams(),
+                    as: PingResult.self,
+                    timeout: 5
+                ))
+            } catch {
+                return .failure(error)
+            }
+        }()
+        async let b: Result<PingResult, Error> = {
+            do {
+                return .success(try await client.request(
+                    method: RPCMethod.rpcPing,
+                    params: PingParams(),
+                    as: PingResult.self,
+                    timeout: 5
+                ))
+            } catch {
+                return .failure(error)
+            }
+        }()
+
+        // Both requests register their continuations before stop() runs.
+        try await Task.sleep(for: .milliseconds(50))
+        client.stop()
+
+        let (resA, resB) = await (a, b)
+        for result in [resA, resB] {
+            switch result {
+            case .success:
+                Issue.record("expected stop() to fail pending request")
+            case .failure(let error):
+                guard case RPCClientError.connectionClosed = error else {
+                    Issue.record("expected connectionClosed, got \(error)")
+                    continue
+                }
+            }
+        }
+    }
+
+    @Test("awaitHandshake returns immediately when rpc.hello arrived before the awaiter")
+    func handshakeAlreadyResolvedFastPath() async throws {
+        // The polling-handshake implementation could miss an `rpc.hello`
+        // that landed during a 50 ms sleep slice; the continuation gate
+        // makes early arrivals stable. Land the inbound hello first,
+        // wait long enough for the dispatcher to ingest it, then await
+        // — it must resolve synchronously without any timeout race.
+        let (client, serverWrite, serverRead) = makeClient()
+        _ = serverRead // hold the read end so the handshake response write doesn't SIGPIPE
+        defer { client.stop() }
+
+        let req = RPCRequest(
+            id: .string("hello-fast"),
+            method: RPCMethod.rpcHello,
+            params: HelloParams(
+                protocolVersion: aosProtocolVersion,
+                clientInfo: ClientInfo(name: "fake", version: "0")
+            )
+        )
+        try serverWrite.write(contentsOf: encodeLine(req))
+
+        // Give the reader queue time to ingest + dispatch the hello.
+        // 200 ms is generous; the handshake fully resolves in ≤10 ms in
+        // practice on a quiet CI box.
+        try await Task.sleep(for: .milliseconds(200))
+
+        // Tight 100 ms timeout: the polling implementation would have
+        // missed the arrival and timed out; the continuation gate caches
+        // the result and returns it without sleeping.
+        let result = try await client.awaitHandshake(timeout: 0.1)
+        #expect(result.protocolVersion == aosProtocolVersion)
     }
 
     // MARK: - Helpers
@@ -312,7 +496,7 @@ struct RPCClientCodecTests {
                 throw RPCClientError.connectionClosed
             }
             // n < 0: EAGAIN expected on non-blocking fd. Sleep + retry.
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await Task.sleep(for: .milliseconds(20))
         }
         throw RPCClientError.timeout(method: "test:readOneLine")
     }

@@ -470,11 +470,33 @@ public final class AgentService {
             mirror.setSubmitError(Self.formatPayloadTooLargeMessage(bytes: bytes, limit: limit))
         } catch {
             // Transport / handler-level failure before the sidecar ever
-            // registered the turn. Surface as a global error indicator
-            // without inventing a synthetic turn (the sidecar wouldn't
-            // know about it, so a turn here would diverge from history).
-            mirror.setSubmitError(nil)
+            // registered the turn. Surface a visible message rather than
+            // a silent banner clear — the user otherwise sees their
+            // submit just disappear and has no clue whether to retry.
+            mirror.setSubmitError(Self.formatSubmitFailureMessage(error: error))
         }
+    }
+
+    internal static func formatSubmitFailureMessage(error: Error) -> String {
+        if let rpc = error as? RPCClientError {
+            switch rpc {
+            case .timeout(let method):
+                return "Send timed out (\(method)). Check the agent connection and try again."
+            case .connectionClosed:
+                return "Lost the agent connection before the message was sent. Restart AOS and try again."
+            case .server(let inner):
+                return "Send failed: \(inner.message)"
+            case .protocolMajorMismatch(let remote, let local):
+                return "Send failed: protocol version mismatch (sidecar \(remote) vs shell \(local))."
+            case .payloadTooLarge:
+                return "Send failed: response payload exceeded the transport cap."
+            case .outboundPayloadTooLarge(_, let bytes, let limit):
+                return formatPayloadTooLargeMessage(bytes: bytes, limit: limit)
+            case .malformed(let detail):
+                return "Send failed: malformed response from sidecar (\(detail))."
+            }
+        }
+        return "Send failed: \(error.localizedDescription)"
     }
 
     internal static func formatPayloadTooLargeMessage(bytes: Int, limit: Int) -> String {

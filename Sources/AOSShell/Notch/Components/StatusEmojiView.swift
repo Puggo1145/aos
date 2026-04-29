@@ -18,6 +18,8 @@ struct StatusEmojiView: View {
     let status: AgentStatus
     let size: Size
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     enum Size {
         case small, medium, large
     }
@@ -36,7 +38,7 @@ struct StatusEmojiView: View {
 
     var body: some View {
         Group {
-            if status == .working {
+            if status == .working && !reduceMotion {
                 TimelineView(.periodic(from: .now, by: 0.4)) { ctx in
                     let tick = Int(ctx.date.timeIntervalSinceReferenceDate / 0.4)
                     Text(tick.isMultiple(of: 2) ? ":/" : ":\\")
@@ -47,17 +49,31 @@ struct StatusEmojiView: View {
         }
         .font(.system(size: fontSize, weight: weight, design: .monospaced))
         .foregroundStyle(.white)
-        .accessibilityLabel(Text(verbatim: "Agent status: \(status)"))
+        .accessibilityLabel(Text("Agent status: \(accessibilityStatusText)"))
     }
 
     private var staticText: String {
         switch status {
         case .idle: return ":)"
         case .listening: return ":o"
-        case .working: return ":/" // unreachable — handled above
+        case .working: return ":/" // shown also when Reduce Motion is on
         case .done: return ":D"
         case .waiting: return ":?"
         case .error: return ":("
+        }
+    }
+
+    /// Human-readable status text for VoiceOver. Avoid emitting the raw
+    /// enum case (`AgentStatus.working`) which VO would read as
+    /// "AgentStatus.working".
+    private var accessibilityStatusText: String {
+        switch status {
+        case .idle: return "ready"
+        case .listening: return "listening"
+        case .working: return "thinking"
+        case .done: return "done"
+        case .waiting: return "waiting for tool"
+        case .error: return "error"
         }
     }
 }

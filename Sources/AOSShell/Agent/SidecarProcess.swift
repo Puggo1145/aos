@@ -94,11 +94,18 @@ public final class SidecarProcess: @unchecked Sendable {
     /// Graceful shutdown: SIGTERM, escalate to forceful terminate after 1s.
     public func terminate() {
         guard let proc = process, proc.isRunning else { return }
+        // Capture the pid up-front. Without this, between the
+        // `proc.isRunning` check and `kill(...)` the OS could reuse this
+        // pid for another process (rare but possible on macOS), and we'd
+        // SIGKILL an unrelated process. The captured pid is also the only
+        // identifier that survives `process` being reassigned by a future
+        // respawn before the timer fires.
+        let pid = proc.processIdentifier
         proc.terminate() // SIGTERM
         Task.detached {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if proc.isRunning {
-                kill(proc.processIdentifier, SIGKILL)
+            try? await Task.sleep(for: .seconds(1))
+            if proc.isRunning && proc.processIdentifier == pid {
+                kill(pid, SIGKILL)
             }
         }
     }
@@ -112,15 +119,26 @@ public final class SidecarProcess: @unchecked Sendable {
 
     // MARK: - Resolution
 
-    /// Find a usable `bun` binary. Tries PATH first (via `which`), then known
-    /// Homebrew install locations on Apple Silicon and Intel.
+    /// Find a usable `bun` binary. Resolution order:
+    ///   1. Bundled binary at `Resources/sidecar/bin/bun` — set by
+    ///      `Scripts/build-app.sh` so a packaged .app is self-contained
+    ///      and doesn't depend on the user having Homebrew.
+    ///   2. PATH lookup via `which bun` — covers `swift run` development.
+    ///   3. Known Homebrew install locations on Apple Silicon and Intel.
     public static func resolveBunBinary() throws -> String {
+        if let bundled = bundledBun() { return bundled }
         if let pathBun = whichBun() { return pathBun }
         let candidates = ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"]
         for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
             return c
         }
         throw SidecarLaunchError.bunNotFound
+    }
+
+    private static func bundledBun() -> String? {
+        guard let res = Bundle.main.resourceURL else { return nil }
+        let candidate = res.appendingPathComponent("sidecar/bin/bun").path
+        return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
     }
 
     private static func whichBun() -> String? {

@@ -35,7 +35,7 @@ struct SessionHistoryPanelView: View {
 
             Text("This launch only — cleared when AOS quits.")
                 .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.55))
+                .notchForeground(.secondary)
 
             if let actionError = sessionStore.lastActionError {
                 HStack(alignment: .top, spacing: 6) {
@@ -48,9 +48,10 @@ struct SessionHistoryPanelView: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .notchForeground(.secondary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notchPressable)
+                    .accessibilityLabel("Dismiss error")
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -83,7 +84,7 @@ struct SessionHistoryPanelView: View {
     private var emptyState: some View {
         Text("No conversations yet")
             .font(.system(size: 12))
-            .foregroundStyle(.white.opacity(0.5))
+            .notchForeground(.tertiary)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 20)
     }
@@ -120,7 +121,7 @@ struct SessionHistoryPanelView: View {
                         .lineLimit(1)
                     Text(subtitle(for: item))
                         .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .notchForeground(.tertiary)
                 }
                 Spacer(minLength: 0)
                 if isActive {

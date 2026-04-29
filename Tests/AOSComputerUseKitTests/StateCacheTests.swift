@@ -125,7 +125,7 @@ struct StateCacheTests {
         let cache = StateCache(ttlSeconds: 0.1)  // 100ms
         let element = Self.aliveElement()
         let stateId = await cache.store(pid: 1, windowId: 2, elements: [0: element])
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await Task.sleep(for: .milliseconds(200))
         do {
             _ = try await cache.lookup(pid: 1, windowId: 2, stateId: stateId, elementIndex: 0)
             Issue.record("expected lookup to fail after TTL expiry")
@@ -169,7 +169,7 @@ struct StateCacheTests {
         let cache = StateCache(ttlSeconds: 0.1)
         await cache.recordScreenshot(pid: 1, windowId: 2, pixelSize: CGSize(width: 100, height: 80))
         let before = await cache.screenshotPixelSize(pid: 1, windowId: 2)
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await Task.sleep(for: .milliseconds(200))
         let after = await cache.screenshotPixelSize(pid: 1, windowId: 2)
         #expect(before == CGSize(width: 100, height: 80))
         #expect(after == nil)

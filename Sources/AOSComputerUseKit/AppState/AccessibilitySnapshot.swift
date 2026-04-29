@@ -28,10 +28,9 @@ import Foundation
 // `accessibilityObservers`) but always re-run step 1 (Chromium resets
 // AXEnhancedUserInterface on backgrounding / tab switches).
 
-/// AXUIElement is a CFType safe for the read + perform / set operations
-/// we run; Apple hasn't annotated Sendable, conform retroactively.
-extension AXUIElement: @retroactive @unchecked Sendable {}
-extension AXObserver: @retroactive @unchecked Sendable {}
+// `AXUIElement` / `AXObserver` retroactive `Sendable` conformance lives in
+// `AOSAXSupport` (the only module both kits depend on) so there is exactly
+// one declaration in the linked binary.
 
 /// No-op AXObserver callback. The observer's mere existence is what
 /// Chromium watches for — we never react to events.
@@ -170,7 +169,7 @@ public actor AccessibilitySnapshot {
         let deadline = Date().addingTimeInterval(0.5)
         while Date() < deadline {
             if Self.hasWebContent(root: root) { return }
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            try? await Task.sleep(for: .milliseconds(25))
         }
     }
 

@@ -69,7 +69,7 @@ struct PermissionOnboardPanelView: View {
             // CGPreflightScreenCaptureAccess which caches per-process).
             while !Task.isCancelled {
                 await permissionsService.refresh()
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(for: .milliseconds(500))
             }
         }
     }
@@ -162,7 +162,7 @@ private struct StepIndicator: View {
                     Capsule()
                         .fill(i == index ? Color.white.opacity(0.85) : Color.white.opacity(0.22))
                         .frame(width: i == index ? 14 : 5, height: 5)
-                        .animation(.smooth(duration: 0.32), value: index)
+                        .animation(.notchHeight, value: index)
                 }
             }
         }

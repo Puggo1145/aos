@@ -40,9 +40,21 @@ struct WindowMirrorTests {
     }
 
     @Test("Self-activation is suppressed: prior projection is preserved")
-    func selfActivationSuppressed() async {
+    func selfActivationSuppressed() async throws {
         let me = NSRunningApplication.current
-        guard let myBundleId = me.bundleIdentifier else { return }
+        // `swift test` runs as `swiftpm-testing-helper`, an unbundled
+        // executable, so `me.bundleIdentifier` is legitimately nil here.
+        // Surface that as a recorded "this case isn't reachable" rather
+        // than a silent pass — the test as written needs a bundled
+        // host process and won't be exercised under SwiftPM. Logged so
+        // CI dashboards can show "skipped because of host shape" rather
+        // than masking it as a green check.
+        guard let myBundleId = me.bundleIdentifier else {
+            withKnownIssue("test runner has no bundleIdentifier — self-activation suppression cannot be validated under swift test") {
+                Issue.record("skipped: bundleIdentifier nil under swift test runner")
+            }
+            return
+        }
 
         // Configure the mirror to treat the test runner as "self".
         let mirror = await MainActor.run {

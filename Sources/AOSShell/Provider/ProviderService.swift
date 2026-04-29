@@ -245,11 +245,20 @@ public final class ProviderService {
                 await self?.refreshStatus()
             }
             successDismissTask?.cancel()
+            // Capture the loginId so the dismiss is bound to *this* login.
+            // The cancellation check runs *before* the actor hop; if the
+            // user dismisses or starts a new login during the 600 ms
+            // window, we must re-verify on the MainActor side that the
+            // current session is still the one we armed for, otherwise we
+            // would wipe a freshly started session.
+            let armedLoginId = session.loginId
             successDismissTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 600_000_000)
+                try? await Task.sleep(for: .milliseconds(600))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    self?.dismissLoginSession()
+                    guard let self else { return }
+                    guard self.loginSession?.loginId == armedLoginId else { return }
+                    self.dismissLoginSession()
                 }
             }
         }

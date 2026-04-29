@@ -84,7 +84,7 @@ public actor FocusGuard {
                 // Tiny grace window so a delayed self-activation we'd miss
                 // by ending immediately still gets reversed. Keeps the
                 // suppression alive for ~50ms after `body` returns.
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                try? await Task.sleep(for: .milliseconds(50))
                 await systemPreventer?.endSuppression(handle)
             }
             return result

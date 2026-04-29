@@ -86,7 +86,7 @@ struct SessionStoreTests {
         // B's turn has the semantic state immediately.
         #expect(store.mirrors["B"]?.turns.first?.status == .waiting)
         // Wait past the debounce window so the display projection lands too.
-        try await Task.sleep(nanoseconds: 400_000_000)
+        try await Task.sleep(for: .milliseconds(400))
         #expect(agent.status == .working)
         #expect(store.mirrors["B"]?.status == .waiting)
     }

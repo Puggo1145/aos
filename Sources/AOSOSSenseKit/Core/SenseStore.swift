@@ -432,7 +432,7 @@ public final class SenseStore {
         let result = await withTaskGroup(of: AsyncStream<[BehaviorEnvelope]>?.self) { group -> AsyncStream<[BehaviorEnvelope]>? in
             group.addTask { await attach() }
             group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
+                try? await Task.sleep(for: .milliseconds(milliseconds))
                 return nil
             }
             let first = await group.next() ?? nil

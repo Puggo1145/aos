@@ -23,7 +23,7 @@ struct AppIconView: View {
             } else {
                 Text("?")
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .notchForeground(.tertiary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel(Text("No frontmost app"))
             }

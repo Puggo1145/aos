@@ -148,7 +148,7 @@ struct ThinkingView: View {
                     // growing/shrinking. Mismatched curves/durations cause
                     // a visible discontinuity between the notch height and
                     // the thinking content frame.
-                    withAnimation(.smooth(duration: 0.32, extraBounce: 0)) {
+                    withAnimation(.notchHeight) {
                         expanded.toggle()
                     }
                 }
@@ -156,12 +156,12 @@ struct ThinkingView: View {
                 HStack(spacing: 4) {
                     Text(elapsedLabel)
                         .font(.system(size: Self.fontSize, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .animation(reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0), value: expanded)
+                        .animation(reduceMotion ? nil : .notchHeight, value: expanded)
                 }
             }
             .buttonStyle(.plain)
@@ -232,28 +232,31 @@ private struct ShimmerText: View {
     }
 
     private var animated: some View {
-        TimelineView(.animation) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let phase = (t.truncatingRemainder(dividingBy: 1.6)) / 1.6
+        // The Text views live OUTSIDE TimelineView so per-frame ticks don't
+        // re-lay-out monospaced text. Only the band gradient inside `.mask`
+        // re-renders on the animation clock; that's a single solid-colored
+        // rectangle, not a wrapped text run.
+        ZStack(alignment: .topLeading) {
+            // Base: dim text always visible, full-width wrapping.
+            Text(text)
+                .font(.system(size: fontSize, weight: .regular, design: .monospaced))
+                .notchForeground(.quaternary)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            ZStack(alignment: .topLeading) {
-                // Base: dim text always visible, full-width wrapping.
-                Text(text)
-                    .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.40))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Overlay: brighter copy of the same text masked by a moving
-                // narrow band. The mask's gradient is L→R across the full
-                // bounding box; vertically the band extends across every
-                // wrapped row, which is exactly what we want — the visible
-                // row inherits the sweep at the right horizontal phase.
-                Text(text)
-                    .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .mask(
-                        GeometryReader { geo in
+            // Overlay: brighter copy of the same text masked by a moving
+            // narrow band. The mask's gradient is L→R across the full
+            // bounding box; vertically the band extends across every
+            // wrapped row, which is exactly what we want — the visible
+            // row inherits the sweep at the right horizontal phase.
+            Text(text)
+                .font(.system(size: fontSize, weight: .regular, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.95))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .mask(
+                    GeometryReader { geo in
+                        TimelineView(.animation) { ctx in
+                            let t = ctx.date.timeIntervalSinceReferenceDate
+                            let phase = (t.truncatingRemainder(dividingBy: 1.6)) / 1.6
                             let width = max(geo.size.width, 1)
                             let bandWidth = max(60, width * 0.35)
                             let travel = width + bandWidth
@@ -270,10 +273,10 @@ private struct ShimmerText: View {
                             .frame(width: bandWidth, height: geo.size.height)
                             .offset(x: x)
                         }
-                    )
-            }
-            .fixedSize(horizontal: false, vertical: true)
+                    }
+                )
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

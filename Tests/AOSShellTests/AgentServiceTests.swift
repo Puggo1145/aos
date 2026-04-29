@@ -74,7 +74,7 @@ struct AgentServiceTests {
         s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T1", status: .waiting))
         #expect(s.turns.last?.status == .waiting)
         #expect(s.status == .working)
-        try await Task.sleep(nanoseconds: 400_000_000)
+        try await Task.sleep(for: .milliseconds(400))
         #expect(s.status == .waiting)
     }
 
@@ -89,9 +89,9 @@ struct AgentServiceTests {
         #expect(s.status == .working)
         // Superseding status arrives well within the 250ms debounce window —
         // matches the "fast local tool" path on the sidecar.
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await Task.sleep(for: .milliseconds(50))
         s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T1", status: .working))
-        try await Task.sleep(nanoseconds: 400_000_000)
+        try await Task.sleep(for: .milliseconds(400))
         // Display never showed `.waiting` — debounce cancelled in time.
         #expect(s.status == .working)
         #expect(s.turns.last?.status == .working)
@@ -104,7 +104,7 @@ struct AgentServiceTests {
         s.handleStatus(UIStatusParams(sessionId: "S", turnId: "T2", status: .done))
         #expect(s.status == .done)
         #expect(s.turns.last?.status == .done)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await Task.sleep(for: .milliseconds(1500))
         // Global status reverts so the closed-bar emoji returns to its
         // resting glyph; the turn's per-turn `status` and `currentTurn` are
         // intentionally retained — the panel keeps the last reply visible
@@ -122,7 +122,7 @@ struct AgentServiceTests {
         #expect(s.status == .error)
         #expect(s.turns.last?.errorMessage == "no auth")
         #expect(s.turns.last?.status == .error)
-        try await Task.sleep(nanoseconds: 2_500_000_000)
+        try await Task.sleep(for: .milliseconds(2500))
         #expect(s.status == .idle)
         // Per-turn error message persists so the history row keeps its
         // banner.

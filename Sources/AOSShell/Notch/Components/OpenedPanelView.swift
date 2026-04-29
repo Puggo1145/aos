@@ -46,8 +46,12 @@ struct OpenedPanelView: View {
     /// are detected after layout, then the scroll view is snapped to the
     /// bottom once the bottom anchor exists.
     @State private var lastMeasuredTurnID: String?
-    @State private var pendingHistoryScroll: DispatchWorkItem?
-    @State private var pendingFollowDisable: DispatchWorkItem?
+    /// Pending scroll-to-bottom work. Replaced DispatchWorkItem so cancel
+    /// goes through structured cancellation rather than DispatchWorkItem's
+    /// best-effort flag — and we don't need to import Dispatch into a
+    /// SwiftUI view file.
+    @State private var pendingHistoryScroll: Task<Void, Never>?
+    @State private var pendingFollowDisable: Task<Void, Never>?
     @State private var historyViewportHeight: CGFloat = 0
     @State private var historyBottomMaxY: CGFloat = 0
     @State private var shouldFollowLiveOutput: Bool = true
@@ -76,7 +80,7 @@ struct OpenedPanelView: View {
         }
         .frame(width: viewModel.notchOpenedSize.width,
                height: viewModel.notchOpenedSize.height)
-        .animation(.smooth(duration: 0.28), value: hasSession)
+        .animation(.notchChrome, value: hasSession)
         .onChange(of: hasSession) { _, active in
             // Drop stale measurements when the conversation resets so the
             // panel collapses back to compact instead of inheriting the last
@@ -133,7 +137,7 @@ struct OpenedPanelView: View {
         } label: {
             headerIcon("gearshape.fill")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notchPressable)
         .accessibilityLabel(Text("Settings"))
     }
 
@@ -160,7 +164,7 @@ struct OpenedPanelView: View {
         } label: {
             headerIcon("plus")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notchPressable)
         .accessibilityLabel(Text("New conversation"))
     }
 
@@ -186,15 +190,15 @@ struct OpenedPanelView: View {
         } label: {
             headerIcon("clock.arrow.circlepath")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notchPressable)
         .accessibilityLabel(Text("Conversation history"))
     }
 
     private func headerIcon(_ systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.55))
-            .frame(width: 22, height: 22)
+            .notchForeground(.secondary)
+            .frame(width: 28, height: 28)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.white.opacity(0.06))
@@ -238,9 +242,10 @@ struct OpenedPanelView: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .notchForeground(.secondary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.notchPressable)
+                    .accessibilityLabel("Dismiss error")
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -318,7 +323,11 @@ struct OpenedPanelView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 20) {
+                    // LazyVStack so off-screen turns aren't laid out or
+                    // re-evaluated on every streaming token. With a regular
+                    // VStack a 200-turn history re-runs `turnRow` for every
+                    // turn on each `ui.token` delta — visible thrash.
+                    LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(agentService.turns) { turn in
                             turnRow(turn)
                                 .id(turn.id)
@@ -420,26 +429,32 @@ struct OpenedPanelView: View {
 
         guard pendingHistoryScroll == nil else { return }
         pendingFollowDisable?.cancel()
-        let workItem = DispatchWorkItem {
+        pendingFollowDisable = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
             shouldFollowLiveOutput = false
             pendingFollowDisable = nil
         }
-        pendingFollowDisable = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
     }
 
     private func scrollHistoryToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         pendingHistoryScroll?.cancel()
         pendingFollowDisable?.cancel()
         pendingFollowDisable = nil
-        let workItem = DispatchWorkItem {
+        // Defer one runloop turn (Task with no sleep coalesces to next
+        // MainActor hop) so the height-update preference and the scroll
+        // command don't fight each other inside the same SwiftUI
+        // transaction. Mirrors the previous DispatchQueue.main.async
+        // semantics but uses structured cancellation.
+        pendingHistoryScroll = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
             if animated && !reduceMotion {
                 withAnimation(.smooth(duration: historyScrollAnimationDuration, extraBounce: 0)) {
                     proxy.scrollTo(HistoryScrollAnchor.bottom, anchor: .bottom)
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + historyScrollAnimationDuration) {
-                    pendingHistoryScroll = nil
-                }
+                try? await Task.sleep(for: .seconds(historyScrollAnimationDuration))
+                pendingHistoryScroll = nil
             } else {
                 var txn = Transaction()
                 txn.disablesAnimations = true
@@ -449,8 +464,6 @@ struct OpenedPanelView: View {
                 pendingHistoryScroll = nil
             }
         }
-        pendingHistoryScroll = workItem
-        DispatchQueue.main.async(execute: workItem)
     }
 
     /// One historical turn = compressed header + reply block + (optional
@@ -458,7 +471,14 @@ struct OpenedPanelView: View {
     /// the live composer above already names the current app, so repeating
     /// the name in every history row is redundant noise.
     private func turnRow(_ turn: ConversationTurn) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // Build a tool-call lookup dictionary once per turn render so segment
+        // resolution is O(1) per segment rather than O(n) over `toolCalls`.
+        // For deeply tool-heavy turns this is a measurable improvement on
+        // streaming redraws.
+        let toolCallById: [String: ToolCallRecord] = Dictionary(
+            uniqueKeysWithValues: turn.toolCalls.map { ($0.id, $0) }
+        )
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if let icon = turn.context.appIcon {
                     Image(nsImage: icon)
@@ -489,7 +509,7 @@ struct OpenedPanelView: View {
                     // for tool calls) so SwiftUI preserves each row's local
                     // state across redraws.
                     ForEach(turn.segments) { segment in
-                        segmentView(segment, in: turn)
+                        segmentView(segment, toolCallById: toolCallById)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -511,7 +531,10 @@ struct OpenedPanelView: View {
     }
 
     @ViewBuilder
-    private func segmentView(_ segment: TurnSegment, in turn: ConversationTurn) -> some View {
+    private func segmentView(
+        _ segment: TurnSegment,
+        toolCallById: [String: ToolCallRecord]
+    ) -> some View {
         switch segment {
         case .thinking(let s):
             ThinkingView(
@@ -521,7 +544,7 @@ struct OpenedPanelView: View {
                 isCurrent: s.isOpenForAppend
             )
         case .toolCall(let id):
-            if let record = turn.toolCalls.first(where: { $0.id == id }) {
+            if let record = toolCallById[id] {
                 ToolCallView(record: record)
             }
         case .reply(let s):
@@ -539,7 +562,7 @@ struct OpenedPanelView: View {
     /// of a static glyph.
     @ViewBuilder
     private func turnEmojiView(_ turn: ConversationTurn) -> some View {
-        if turn.status == .working && turn.reply.isEmpty {
+        if turn.status == .working && turn.reply.isEmpty && !reduceMotion {
             TimelineView(.periodic(from: .now, by: 0.4)) { ctx in
                 let tick = Int(ctx.date.timeIntervalSinceReferenceDate / 0.4)
                 Text(tick.isMultiple(of: 2) ? ":/" : ":\\")

@@ -53,7 +53,7 @@ struct AXEnablementAssertionTests {
         #expect(await assertion.isKnownNonAssertable(pid: pid))
         // Inside TTL: still cached, no re-probe.
         #expect(await assertion.isKnownNonAssertable(pid: pid))
-        try await Task.sleep(nanoseconds: 200_000_000) // 200ms > 100ms TTL
+        try await Task.sleep(for: .milliseconds(200)) // 200ms > 100ms TTL
         // After TTL: lazy eviction on read returns false → re-probe path.
         #expect(!(await assertion.isKnownNonAssertable(pid: pid)))
     }

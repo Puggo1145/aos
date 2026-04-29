@@ -185,7 +185,7 @@ struct ComposerCard: View {
         } label: {
             Text(active?.label ?? "")
                 .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(.white.opacity(0.5))
+                .notchForeground(.tertiary)
                 .padding(.vertical, 4)
                 .contentShape(Rectangle())
         }
@@ -210,13 +210,18 @@ struct ComposerCard: View {
             Image(systemName: "arrow.up")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(canSubmit ? Color.black : Color.white.opacity(0.4))
-                .frame(width: 26, height: 26)
+                .frame(width: 28, height: 28)
                 .background(
                     Circle()
                         .fill(canSubmit ? Color.white : Color.white.opacity(0.15))
                 )
+                // Subtle "ready to fire" cue — the disc fades in/out as the
+                // composer transitions between disabled/enabled. Reduce
+                // Motion users get the snap because the style itself respects
+                // the environment.
+                .animation(.notchChrome, value: canSubmit)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notchPressable)
         .disabled(!canSubmit)
         .accessibilityLabel(Text("Send prompt"))
     }
@@ -230,10 +235,10 @@ struct ComposerCard: View {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(Color.black)
                 .frame(width: 9, height: 9)
-                .frame(width: 26, height: 26)
+                .frame(width: 28, height: 28)
                 .background(Circle().fill(Color.white))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.notchPressable)
         .accessibilityLabel(Text("Stop agent"))
     }
 

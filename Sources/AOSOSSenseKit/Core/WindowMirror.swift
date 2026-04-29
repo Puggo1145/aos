@@ -31,7 +31,12 @@ public final class WindowMirror {
     public private(set) var window: WindowIdentity?
 
     private let hub: AXObserverHub?
-    private let onChange: (AppIdentity?, WindowIdentity?) async -> Void
+    /// Synchronous MainActor callback. Was previously `async`, which forced
+    /// every emit through `Task { await self.onChange(...) }` and let two
+    /// concurrent NSWorkspace activations interleave inside the consumer's
+    /// state — breaking the documented "single writer" invariant. The
+    /// synchronous form serializes naturally on @MainActor.
+    private let onChange: @MainActor (AppIdentity?, WindowIdentity?) -> Void
     private let selfBundleId: String?
 
     private var workspaceObserver: NSObjectProtocol?
@@ -43,7 +48,7 @@ public final class WindowMirror {
     public init(
         hub: AXObserverHub? = nil,
         selfBundleId: String? = Bundle.main.bundleIdentifier,
-        onChange: @escaping (AppIdentity?, WindowIdentity?) async -> Void
+        onChange: @escaping @MainActor (AppIdentity?, WindowIdentity?) -> Void
     ) {
         self.hub = hub
         self.selfBundleId = selfBundleId
@@ -59,9 +64,16 @@ public final class WindowMirror {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let self else { return }
-            let runningApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            Task { @MainActor in self.applyFrontmost(runningApp) }
+            // Callback is registered with `queue: .main`, so we are
+            // already on the main thread when this fires. Use
+            // `MainActor.assumeIsolated` instead of `Task { @MainActor }`
+            // so back-to-back activations don't interleave inside
+            // `applyFrontmost` via two queued Tasks.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let runningApp = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                self.applyFrontmost(runningApp)
+            }
         }
     }
 
@@ -120,9 +132,7 @@ public final class WindowMirror {
         let resolvedWindow = newApp.map { resolveWindow(for: $0) } ?? nil
         self.app = newApp
         self.window = resolvedWindow
-        let appCopy = newApp
-        let windowCopy = resolvedWindow
-        Task { await self.onChange(appCopy, windowCopy) }
+        self.onChange(newApp, resolvedWindow)
     }
 
     /// Re-resolve the focused window for the current app and re-emit. Used
@@ -131,14 +141,12 @@ public final class WindowMirror {
     private func reemitWithCurrentWindow() {
         guard let currentApp = app else {
             window = nil
-            Task { await self.onChange(nil, nil) }
+            self.onChange(nil, nil)
             return
         }
         let resolvedWindow = resolveWindow(for: currentApp)
         window = resolvedWindow
-        let appCopy = currentApp
-        let windowCopy = resolvedWindow
-        Task { await self.onChange(appCopy, windowCopy) }
+        self.onChange(currentApp, resolvedWindow)
     }
 
     /// Try the AX path first; fall back to `(app.name, nil)` if AX isn't

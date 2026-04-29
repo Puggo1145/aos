@@ -99,6 +99,22 @@ public final class NotchWindowController {
                 )
             }
             .store(in: &cancellables)
+
+        // React to VoiceOver state flips so a user enabling/disabling VO
+        // mid-session immediately gets the right click-through behavior
+        // without having to move the mouse first.
+        DistributedNotificationCenter.default()
+            .publisher(for: Notification.Name("com.apple.accessibility.api"))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak window, weak viewModel] _ in
+                guard let window, let viewModel else { return }
+                Self.applyClickThrough(
+                    window: window,
+                    viewModel: viewModel,
+                    mouse: NSEvent.mouseLocation
+                )
+            }
+            .store(in: &cancellables)
     }
 
     private static func applyClickThrough(
@@ -106,6 +122,19 @@ public final class NotchWindowController {
         viewModel: NotchViewModel,
         mouse: NSPoint
     ) {
+        // Click-through must NOT be applied while VoiceOver is running:
+        // VO routes synthetic mouse + activation events through the same
+        // hit-testing path; with `ignoresMouseEvents = true` the window
+        // becomes invisible to assistive technology and the entire notch
+        // UI is unreachable. Keeping the window mouse-active for VO users
+        // costs nothing because they don't generate hover events that
+        // would land on regions outside the silhouette.
+        if NSWorkspace.shared.isVoiceOverEnabled {
+            if window.ignoresMouseEvents {
+                window.ignoresMouseEvents = false
+            }
+            return
+        }
         let shouldIgnore = !viewModel.visibleHotRect.contains(mouse)
         if window.ignoresMouseEvents != shouldIgnore {
             window.ignoresMouseEvents = shouldIgnore

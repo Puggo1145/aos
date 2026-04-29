@@ -28,6 +28,7 @@ struct ClosedBarView: View {
     /// the emoji glyph.
     let activeToolName: String?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse: Bool = false
 
     var body: some View {
@@ -56,8 +57,14 @@ struct ClosedBarView: View {
                 .frame(width: h, height: h)
         }
         .frame(width: deviceNotchRect.width + h * 2, height: h)
-        .animation(.smooth(duration: 0.32, extraBounce: 0), value: backgroundOp)
-        .onAppear { pulse = true }
+        .animation(.notchHeight, value: backgroundOp)
+        .onAppear { pulse = !reduceMotion }
+        .onDisappear { pulse = false }
+        .onChange(of: reduceMotion) { _, newValue in
+            // Stop the perpetual pulse when the user enables Reduce Motion
+            // mid-session, and re-arm if they disable it.
+            pulse = !newValue
+        }
     }
 }
 
@@ -73,6 +80,8 @@ private struct BackgroundOpBadge: View {
     let op: BackgroundOperation
     let height: CGFloat
     let pulse: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let size = max(12, height * 0.58)
@@ -91,9 +100,9 @@ private struct BackgroundOpBadge: View {
             }
         }
         .frame(width: size, height: size)
-        .opacity(pulse ? 0.55 : 1.0)
+        .opacity(reduceMotion ? 1.0 : (pulse ? 0.55 : 1.0))
         .animation(
-            .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+            reduceMotion ? .default : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
             value: pulse
         )
         .accessibilityLabel(Text(accessibilityLabel))

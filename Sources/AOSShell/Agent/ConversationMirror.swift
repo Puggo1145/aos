@@ -37,7 +37,7 @@ public final class ConversationMirror {
     /// flash visibly between two `:/` states. We delay applying `.waiting`
     /// so only tools that actually take time produce the visible swap.
     private var waitingDebounceTask: Task<Void, Never>?
-    private static let waitingDebounceNanos: UInt64 = 250_000_000
+    private static let waitingDebounce: Duration = .milliseconds(250)
 
     public init(sessionId: String) {
         self.sessionId = sessionId
@@ -354,21 +354,29 @@ public final class ConversationMirror {
 
     // MARK: - Revert timers
 
+    // The class is `@MainActor`, so a plain `Task { ... }` opened inside
+    // these methods inherits MainActor isolation. The previous code wrapped
+    // the assignment in `await MainActor.run { ... }`, which (1) was
+    // redundant — the Task body already runs on MainActor — and (2) opened
+    // a cancellation race window across the inner suspension where a
+    // newer turn could reset state between `Task.isCancelled` and the
+    // assignment. Inlining the assignment closes that window.
+
     private func scheduleDoneRevert() {
         doneRevertTask?.cancel()
         doneRevertTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled, let self else { return }
-            await MainActor.run { self.status = .idle }
+            self.status = .idle
         }
     }
 
     private func scheduleErrorRevert() {
         errorRevertTask?.cancel()
         errorRevertTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, let self else { return }
-            await MainActor.run { self.status = .idle }
+            self.status = .idle
         }
     }
 
@@ -382,11 +390,9 @@ public final class ConversationMirror {
     private func scheduleWaitingDebounce() {
         waitingDebounceTask?.cancel()
         waitingDebounceTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.waitingDebounceNanos)
+            try? await Task.sleep(for: Self.waitingDebounce)
             guard !Task.isCancelled, let self else { return }
-            await MainActor.run {
-                self.status = .waiting
-            }
+            self.status = .waiting
         }
     }
 

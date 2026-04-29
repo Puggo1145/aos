@@ -94,11 +94,11 @@ struct SettingsPanelView: View {
             // PermissionsService).
             while !Task.isCancelled {
                 await permissionsService.refresh()
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(for: .milliseconds(500))
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .animation(.smooth(duration: 0.24, extraBounce: 0), value: page)
+        .animation(.notchChrome, value: page)
         .onExitCommand {
             if page == .main { onClose() } else { page = .main }
         }
@@ -206,24 +206,31 @@ struct SettingsPanelView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white.opacity(0.92))
                 Spacer(minLength: 8)
+                // SF Symbol + color: state is conveyed by glyph shape, not
+                // only hue, so the row reads correctly for color-blind users
+                // and in increased-contrast mode.
                 if provider.state == .ready {
-                    Circle()
-                        .fill(Color.green.opacity(0.8))
-                        .frame(width: 6, height: 6)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.green.opacity(0.85))
+                        .accessibilityHidden(true)
                     Text("Saved")
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
+                        .accessibilityLabel(Text("API key saved"))
                 } else {
-                    Circle()
-                        .fill(Color.red.opacity(0.85))
-                        .frame(width: 6, height: 6)
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.red.opacity(0.9))
+                        .accessibilityHidden(true)
                     Text("Required")
                         .font(.system(size: 11))
-                        .foregroundStyle(.red.opacity(0.85))
+                        .foregroundStyle(.red.opacity(0.9))
+                        .accessibilityLabel(Text("API key required"))
                 }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .notchForeground(.secondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -243,7 +250,7 @@ struct SettingsPanelView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Stored locally in macOS Keychain. Never written to disk by the agent process.")
                     .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .notchForeground(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 SecureField("sk-…", text: $apiKeyDraft)
@@ -345,17 +352,19 @@ struct SettingsPanelView: View {
         // Single button. Label + status text both flip on auth state; tap
         // either signs in OR re-auths (logout + startLogin) — the user
         // never has to choose between two near-identical actions.
-        let (statusText, statusColor, isInflight): (String, Color, Bool) = {
+        // SF Symbol pairs with the color so colorblind / increased-contrast
+        // users see a distinct shape per state, not just a hue swap.
+        let (statusText, statusColor, statusGlyph, isInflight): (String, Color, String, Bool) = {
             if let s = session {
                 switch s.state {
-                case .awaitingCallback: return ("Opened in browser…", Color.white.opacity(0.6), true)
-                case .exchanging:       return ("Verifying…",         Color.white.opacity(0.6), true)
-                case .failed:           return (s.message ?? "Sign-in failed", Color.red.opacity(0.85), false)
-                case .success:          return ("Signed in",          Color.green.opacity(0.85), false)
+                case .awaitingCallback: return ("Opened in browser…", Color.white.opacity(0.6), "hourglass", true)
+                case .exchanging:       return ("Verifying…",         Color.white.opacity(0.6), "hourglass", true)
+                case .failed:           return (s.message ?? "Sign-in failed", Color.red.opacity(0.85), "exclamationmark.circle.fill", false)
+                case .success:          return ("Signed in",          Color.green.opacity(0.85), "checkmark.circle.fill", false)
                 }
             }
-            if isReady { return ("Signed in", Color.green.opacity(0.85), false) }
-            return ("Required", Color.red.opacity(0.85), false)
+            if isReady { return ("Signed in", Color.green.opacity(0.85), "checkmark.circle.fill", false) }
+            return ("Required", Color.red.opacity(0.85), "exclamationmark.circle.fill", false)
         }()
         let rowTitle = isReady ? "Re-authenticate \(provider.name)" : "Sign in to \(provider.name)"
         let onTap: () -> Void = {
@@ -382,16 +391,17 @@ struct SettingsPanelView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.white.opacity(0.92))
                     Spacer(minLength: 8)
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 6, height: 6)
+                    Image(systemName: statusGlyph)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(statusColor)
+                        .accessibilityHidden(true)
                     Text(statusText)
                         .font(.system(size: 11))
                         .foregroundStyle(statusColor)
                         .lineLimit(1)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .notchForeground(.secondary)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -441,20 +451,25 @@ struct SettingsPanelView: View {
                     .foregroundStyle(.white.opacity(0.92))
                 Spacer(minLength: 8)
                 if missingPermissions.isEmpty {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.green.opacity(0.7))
+                        .accessibilityHidden(true)
                     Text("All granted")
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .notchForeground(.secondary)
                 } else {
-                    Circle()
-                        .fill(Color.red.opacity(0.85))
-                        .frame(width: 6, height: 6)
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.red.opacity(0.9))
+                        .accessibilityHidden(true)
                     Text("\(missingPermissions.count) missing")
                         .font(.system(size: 11))
-                        .foregroundStyle(.red.opacity(0.85))
+                        .foregroundStyle(.red.opacity(0.9))
                 }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .notchForeground(.secondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -503,7 +518,7 @@ struct SettingsPanelView: View {
                 Spacer(minLength: 8)
                 Image(systemName: "arrow.up.forward.square")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .notchForeground(.secondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -555,7 +570,7 @@ struct SettingsPanelView: View {
         quitConfirming = true
         quitConfirmTask?.cancel()
         quitConfirmTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled {
                 quitConfirming = false
             }
@@ -659,7 +674,7 @@ struct SettingsPanelView: View {
     private var placeholder: some View {
         Text(configService.loaded ? "No providers available." : "Loading…")
             .font(.system(size: 12))
-            .foregroundStyle(.white.opacity(0.55))
+            .notchForeground(.secondary)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 24)
     }

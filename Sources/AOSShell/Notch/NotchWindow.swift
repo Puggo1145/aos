@@ -34,6 +34,13 @@ final class NotchWindow: NSWindow {
             .canJoinAllSpaces,
             .ignoresCycle
         ]
+        // Without an explicit a11y label the borderless window is
+        // announced as just "window" by VoiceOver. Naming the window and
+        // tagging it as a floating-utility overlay lets AT distinguish
+        // it from the user's actual document windows.
+        setAccessibilityLabel("AOS Notch")
+        setAccessibilityRole(.window)
+        setAccessibilitySubrole(.floatingWindow)
     }
 
     override var canBecomeKey: Bool { true }
