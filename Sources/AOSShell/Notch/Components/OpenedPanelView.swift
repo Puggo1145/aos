@@ -5,19 +5,10 @@ import MarkdownUI
 
 // MARK: - OpenedPanelView
 //
-// Conversation panel. The input row is a permanent fixture at the bottom; the
-// space above it is split into:
-//
-//   1. A vertical history of past turns. Each turn is rendered as a single
-//      compressed header line ([app icon] · prompt) followed by an emoji-
-//      prefixed reply block. The header is the *snapshot* taken at submit
-//      time — once a turn enters the history it freezes and the live
-//      SenseStore ticks no longer change it.
-//   2. A live "next turn" composer just above the input: full chips of the
-//      *current* SenseContext, so the user always sees what would be cited
-//      if they pressed Return right now.
-//
-// Layout sketches (input always anchored at the bottom):
+// Conversation panel. History scrolls above a live composer that's pinned at
+// the bottom. Each historical turn is a header line ([app icon] · prompt)
+// over an emoji-prefixed reply block; the header is a snapshot taken at
+// submit time and doesn't track later SenseStore ticks.
 //
 //   no turns yet:                 turns present:
 //   ┌──────────────────┐          ┌─────────────────────────┐
@@ -30,10 +21,6 @@ import MarkdownUI
 //                                 │ live chips              │
 //                                 │ [TextField] ⬆           │
 //                                 └─────────────────────────┘
-//
-// Each new submit appends to `agentService.turns` and the ScrollView is
-// programmatically scrolled to the new turn so the user sees their freshly
-// submitted prompt + the streaming reply without manual scrolling.
 
 struct OpenedPanelView: View {
     let viewModel: NotchViewModel
@@ -42,37 +29,16 @@ struct OpenedPanelView: View {
     let visualCapturePolicyStore: VisualCapturePolicyStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Last turn id observed by the history-height measurement. New turns
-    /// are detected after layout, then the scroll view is snapped to the
-    /// bottom once the bottom anchor exists.
-    @State private var lastMeasuredTurnID: String?
-    /// Pending scroll-to-bottom work. Replaced DispatchWorkItem so cancel
-    /// goes through structured cancellation rather than DispatchWorkItem's
-    /// best-effort flag — and we don't need to import Dispatch into a
-    /// SwiftUI view file.
-    @State private var pendingHistoryScroll: Task<Void, Never>?
-    @State private var pendingFollowDisable: Task<Void, Never>?
-    @State private var historyViewportHeight: CGFloat = 0
-    @State private var historyBottomMaxY: CGFloat = 0
-    @State private var shouldFollowLiveOutput: Bool = true
-    /// False until the ScrollView has been positioned at the bottom for the
-    /// first time after mount. The panel is dropped from the tree on close,
-    /// so reopening with non-empty turns starts a fresh ScrollView at offset
-    /// 0 — without an explicit initial restore the user sees the *top* of a
-    /// long history and a stale offset past actual content (LazyVStack
-    /// row-height estimates underflow, so `scrollTo(.bottom)` lands past the
-    /// real end of content until interaction realizes intermediate rows).
-    @State private var hasRestoredInitialScroll: Bool = false
-    /// Deferred reassertion of the initial restore. Lives in its own task
-    /// slot (not `pendingHistoryScroll`) so streaming-height-driven
-    /// `scrollHistoryToBottom` calls during the settle window can't cancel
-    /// it. While non-nil, live-follow scrolling is suppressed — the restore
-    /// task is the one in charge of pinning the bottom.
-    @State private var pendingInitialRestore: Task<Void, Never>?
+    @State private var followBottom: Bool = true
+    @State private var viewportHeight: CGFloat = 0
+    @State private var bottomSentinelMaxY: CGFloat = 0
+    @State private var prevContentHeight: CGFloat = 0
+    @State private var prevBottomSentinelMaxY: CGFloat = 0
+    @State private var followEvalPending: Bool = false
+    @State private var lastObservedTurnCount: Int = 0
 
-    /// Top safe area equal to the physical notch height. The opened panel
-    /// extends to the very top of the screen, so any content inside the
-    /// `0..<deviceNotchRect.height` band sits behind the hardware cutout.
+    /// Hardware notch height — content inside this top band sits behind
+    /// the cutout and must be reserved as a top safe inset.
     private var topSafeInset: CGFloat {
         viewModel.deviceNotchRect.height
     }
@@ -81,11 +47,12 @@ struct OpenedPanelView: View {
         viewModel.isAgentLoopActive
     }
 
-    /// Single padding constant used on every inset where it isn't dictated by
-    /// the hardware notch (top). Keeping leading / trailing / bottom equal
-    /// keeps the panel reading as evenly framed.
     private let edgePadding: CGFloat = 16
-    private let historyScrollAnimationDuration: TimeInterval = 0.26
+    /// Symmetric ±4pt band around the viewport bottom: re-attach when
+    /// the sentinel sits within this slack of the bottom; detach when a
+    /// user-driven scroll moves it more than this past content growth.
+    private let atBottomSlack: CGFloat = 4
+    private let userDetachThreshold: CGFloat = 4
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -96,36 +63,29 @@ struct OpenedPanelView: View {
                height: viewModel.notchOpenedSize.height)
         .animation(.notchChrome, value: hasSession)
         .onChange(of: hasSession) { _, active in
-            // Drop stale measurements when the conversation resets so the
-            // panel collapses back to compact instead of inheriting the last
-            // session's height.
             if !active {
                 viewModel.historyContentHeight = 0
-                lastMeasuredTurnID = nil
-                shouldFollowLiveOutput = true
-                hasRestoredInitialScroll = false
-                pendingHistoryScroll?.cancel()
-                pendingHistoryScroll = nil
-                pendingInitialRestore?.cancel()
-                pendingInitialRestore = nil
-                pendingFollowDisable?.cancel()
-                pendingFollowDisable = nil
+                followBottom = true
+                viewportHeight = 0
+                bottomSentinelMaxY = 0
+                prevContentHeight = 0
+                prevBottomSentinelMaxY = 0
+                followEvalPending = false
+                lastObservedTurnCount = 0
             }
         }
     }
 
     // MARK: - Header strips (left/right of the physical notch)
 
-    /// The top band (height = physical notch height) is split by the hardware
-    /// cutout into a left and right strip. Both strips are part of the panel
-    /// silhouette (NotchShape paints them black so they merge with the
-    /// notch) and host global controls — settings + "new conversation".
+    /// Two strips flanking the hardware notch cutout, hosting the global
+    /// controls (settings, new conversation, history). NotchShape paints
+    /// them black so they read as part of the notch silhouette.
     private var headerStrips: some View {
         let stripWidth = max(0, (viewModel.notchOpenedSize.width - viewModel.deviceNotchRect.width) / 2)
         let bandHeight = topSafeInset
         let notchGap: CGFloat = 8
         return HStack(spacing: 0) {
-            // Left strip: gear (settings) flush against the notch.
             HStack {
                 Spacer(minLength: 0)
                 gearButton
@@ -136,8 +96,6 @@ struct OpenedPanelView: View {
             Spacer(minLength: 0)
                 .frame(width: viewModel.deviceNotchRect.width, height: bandHeight)
 
-            // Right strip: "+" (new session) + history. "+" is closer to the
-            // notch so the eye reads "create" before "browse" L-to-R.
             HStack(spacing: 6) {
                 newConversationButton
                     .padding(.leading, notchGap)
@@ -160,11 +118,8 @@ struct OpenedPanelView: View {
 
     private var newConversationButton: some View {
         Button {
-            // "+" starts a fresh in-process session (per design: the old one
-            // is preserved for the user to navigate back via history). The
-            // sidecar's `session.create` auto-activates; SessionService drives
-            // `SessionStore.adoptCreated` from the response so mirror+activeId
-            // flip atomically before SwiftUI reads them.
+            // SessionService.create auto-activates via SessionStore.adoptCreated
+            // so the mirror + activeId flip atomically before SwiftUI reads them.
             Task {
                 do {
                     _ = try await viewModel.sessionService.create()
@@ -187,10 +142,9 @@ struct OpenedPanelView: View {
 
     private var historyButton: some View {
         Button {
-            // Refresh from sidecar before opening so turnCount/lastActivityAt
-            // are up to date. Flip `showHistory` regardless of refresh
-            // outcome — the panel renders the cached list and surfaces a
-            // banner via `sessionStore.lastActionError` if refresh failed.
+            // Refresh first so turnCount / lastActivityAt are current, then
+            // open regardless of outcome — the panel renders the cached list
+            // and surfaces a banner if refresh failed.
             Task {
                 let store = viewModel.agentService.sessionStore
                 do {
@@ -229,10 +183,8 @@ struct OpenedPanelView: View {
             if hasSession {
                 history
             }
-            // Boot-time session.create failure. The composer below is also
-            // disabled, but this banner is the precise reason — surfaces it
-            // ahead of the input so the user reads "why" before "what's
-            // greyed out".
+            // Boot-time session.create failure: explains why the composer
+            // below is disabled.
             if let msg = agentService.sessionStore.bootError, !msg.isEmpty {
                 Text(msg)
                     .font(.system(size: 12, weight: .medium))
@@ -245,9 +197,7 @@ struct OpenedPanelView: View {
                             .fill(Color.red.opacity(0.12))
                     )
             }
-            // Session-action failures (create / activate / list refresh)
-            // surface here when no history panel is overlaid. Dismissable so
-            // a stale banner doesn't linger after the user moves on.
+            // Session-action failures (create / activate / list refresh).
             if let actionError = agentService.sessionStore.lastActionError {
                 HStack(alignment: .top, spacing: 6) {
                     Text(actionError.message)
@@ -271,9 +221,8 @@ struct OpenedPanelView: View {
                         .fill(Color.red.opacity(0.12))
                 )
             }
-            // Submit-time errors that have no per-turn slot (e.g. the
-            // outbound payload exceeded the RPC line cap). Displayed above
-            // the composer so the user sees it before re-submitting.
+            // Submit-time errors that have no per-turn slot (e.g. payload
+            // exceeded the RPC line cap).
             if let msg = agentService.lastErrorMessage, !msg.isEmpty {
                 Text(msg)
                     .font(.system(size: 12, weight: .medium))
@@ -286,13 +235,6 @@ struct OpenedPanelView: View {
                             .fill(Color.red.opacity(0.12))
                     )
             }
-            // s03 TodoWrite plan is surfaced as a tray item in the system
-            // drawer (see `SystemTrayView` + `NotchViewModel.trayItems`,
-            // built-in source registered in `installBuiltinTraySources`)
-            // — one live row showing the in_progress step + a `done/total`
-            // badge. Keeping it out of the main panel avoids stealing
-            // history real estate while leaving the audit trail in the
-            // inline `todo_write` tool-call rows.
             liveComposer
         }
         .padding(.top, topSafeInset)
@@ -301,10 +243,6 @@ struct OpenedPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// Single composer card per the redesign: chips, then the input, then
-    /// a function row (model + effort menus on the left, send on the right).
-    /// Renders as one bordered rounded rect so the user reads "this entire
-    /// box is what I'd be sending right now".
     private var liveComposer: some View {
         ComposerCard(
             senseStore: senseStore,
@@ -317,21 +255,11 @@ struct OpenedPanelView: View {
                 set: { viewModel.inputFocused = $0 }
             )
         )
-        // Disable typing + submission when the currently *selected* provider
-        // isn't authenticated — otherwise the user could compose and send
-        // against e.g. codex with no token, and the agent loop would just
-        // bounce the request. Permission gaps don't disable the input here:
-        // the user can still queue a prompt while granting access in Settings.
-        // Also disabled when bootstrap session.create failed: there's no
-        // active session to attach a turn to and submit would no-op.
         .disabled(!viewModel.composerSubmitEnabled)
         .opacity(viewModel.composerSubmitEnabled ? 1.0 : 0.55)
-        // Pin the composer to its natural vertical size so the parent
-        // VStack's `maxHeight: .infinity` (needed for history) can't
-        // stretch it. Without this, the inner NSTextView would accept
-        // the stretched offer, GeometryReader would report the inflated
-        // height into `composerContentHeight`, and the panel would stay
-        // tall after settings closes.
+        // Pin to natural height — without this the inner NSTextView accepts
+        // the parent's `maxHeight: .infinity` offer and inflates
+        // `composerContentHeight`.
         .fixedSize(horizontal: false, vertical: true)
         .background(
             GeometryReader { geo in
@@ -343,38 +271,50 @@ struct OpenedPanelView: View {
         }
     }
 
+    /// Conversation history. Plain VStack (no LazyVStack) so each row
+    /// reports its real height; `scrollTo` then lands precisely and the
+    /// natural-height preference up to the viewmodel is the truth.
+    ///
+    /// Scroll behaviour is gated on `followBottom` (auto-snap to bottom
+    /// on growth), which the user toggles by scrolling up/down. Detect
+    /// the toggle via a 1pt sentinel at the bottom of content reporting
+    /// its `maxY` in the ScrollView's coordinate space — a sentinel is
+    /// required because a `.background` GeometryReader on the VStack
+    /// only refires on size changes, not on pure scroll moves.
     private var history: some View {
         ScrollViewReader { proxy in
             ScrollView {
+                // Outer `spacing: 0` isolates the sentinel from the
+                // inner 20pt turn spacing so the sentinel contributes
+                // only its own 1pt to `historyContentHeight`.
                 VStack(alignment: .leading, spacing: 0) {
-                    // LazyVStack so off-screen turns aren't laid out or
-                    // re-evaluated on every streaming token. With a regular
-                    // VStack a 200-turn history re-runs `turnRow` for every
-                    // turn on each `ui.token` delta — visible thrash.
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 20) {
                         ForEach(agentService.turns) { turn in
                             turnRow(turn)
                                 .id(turn.id)
+                                .transition(.asymmetric(
+                                    insertion: .opacity,
+                                    removal: .identity
+                                ))
                         }
                     }
+                    // Keyed on `count` so streaming tokens inside an
+                    // existing turn don't trigger the insert transition.
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.32), value: agentService.turns.count)
 
                     Color.clear
                         .frame(height: 1)
-                        .id(HistoryScrollAnchor.bottom)
+                        .id(historyBottomAnchor)
                         .background(
                             GeometryReader { geo in
                                 Color.clear.preference(
                                     key: HistoryBottomMaxYKey.self,
-                                    value: geo.frame(in: .named(HistoryCoordinateSpace.viewport)).maxY
+                                    value: geo.frame(in: .named(historyViewportSpace)).maxY
                                 )
                             }
                         )
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                // Measured *inside* the ScrollView so we read the content's
-                // natural (unconstrained) height; the parent ScrollView lets the
-                // VStack be as tall as it wants. The viewmodel uses this to
-                // grow the silhouette toward `notchOpenedMaxHeight`.
                 .background(
                     GeometryReader { geo in
                         Color.clear.preference(key: HistoryHeightKey.self, value: geo.size.height)
@@ -382,194 +322,145 @@ struct OpenedPanelView: View {
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .coordinateSpace(name: HistoryCoordinateSpace.viewport)
+            .coordinateSpace(name: historyViewportSpace)
             .background(
                 GeometryReader { geo in
                     Color.clear.preference(key: HistoryViewportHeightKey.self, value: geo.size.height)
                 }
             )
-            .onPreferenceChange(HistoryViewportHeightKey.self) { h in
-                historyViewportHeight = h.rounded()
-                updateLiveOutputFollowState()
+            .onAppear {
+                lastObservedTurnCount = agentService.turns.count
+                guard let lastID = agentService.turns.last?.id else { return }
+                followBottom = true
+                Task { @MainActor in
+                    await Task.yield()
+                    var txn = Transaction()
+                    txn.disablesAnimations = true
+                    withTransaction(txn) {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
             }
-            .onPreferenceChange(HistoryBottomMaxYKey.self) { y in
-                historyBottomMaxY = y.rounded()
-                updateLiveOutputFollowState()
+            .onPreferenceChange(HistoryViewportHeightKey.self) { h in
+                viewportHeight = h.rounded()
+                scheduleFollowEval()
             }
             .onPreferenceChange(HistoryHeightKey.self) { h in
                 let rounded = h.rounded()
-                if viewModel.historyContentHeight != rounded {
-                    viewModel.historyContentHeight = rounded
-                }
-
-                let turnID = agentService.turns.last?.id
-                let isInitialRestore = !hasRestoredInitialScroll && turnID != nil
-                let didAppendTurn = !isInitialRestore && turnID != lastMeasuredTurnID
-                lastMeasuredTurnID = turnID
-
-                if isInitialRestore || didAppendTurn {
-                    shouldFollowLiveOutput = true
-                }
-
-                if isInitialRestore {
-                    // First measurement after mount with existing turns.
-                    // Snap to the last turn's id (not the bottom-anchor 1pt
-                    // sentinel) — under LazyVStack the sentinel's absolute
-                    // position is summed from estimated heights of unrealized
-                    // rows, so scrolling to it lands past real content. Targeting
-                    // a real id forces SwiftUI to realize that row and place it
-                    // correctly. Animation off: the panel is still mid-open
-                    // transition, animating the scroll on top of a growing frame
-                    // produces a stale offset.
-                    hasRestoredInitialScroll = true
-                    if isHistoryInternallyScrollable(contentHeight: rounded) {
-                        scrollHistoryToTurn(turnID, proxy: proxy, animated: false)
+                guard viewModel.historyContentHeight != rounded else { return }
+                let didGrow = rounded > viewModel.historyContentHeight
+                let countNow = agentService.turns.count
+                let countGrew = countNow > lastObservedTurnCount
+                lastObservedTurnCount = countNow
+                let availableViewport = viewModel.notchOpenedMaxHeight
+                    - viewModel.openedContentVerticalChrome
+                    - viewModel.composerContentHeight
+                let wasOverflowing = viewModel.historyContentHeight > availableViewport
+                viewModel.historyContentHeight = rounded
+                let nowOverflowing = rounded > availableViewport
+                // Skip when content still fits — the panel grows
+                // downward naturally and a scrollTo would bottom-pin
+                // the ScrollView, producing a per-line bounce against
+                // the `.notchHeight` animation.
+                //
+                // Skip when growth isn't a new turn and the last turn
+                // is settled — that's the user expanding a
+                // ThinkingView / ToolCallView, snapping would push the
+                // row they just opened out of view.
+                guard didGrow, followBottom, nowOverflowing,
+                      countGrew || isLastTurnLive else { return }
+                // Animate when a new turn appeared or content just
+                // crossed the overflow threshold (one large translation
+                // either way). Snap instantly for per-token streaming
+                // growth, otherwise each token would bounce.
+                if (countGrew || !wasOverflowing) && !reduceMotion {
+                    Task { @MainActor in
+                        await Task.yield()
+                        withAnimation(.smooth(duration: 0.32)) {
+                            proxy.scrollTo(historyBottomAnchor, anchor: .bottom)
+                        }
                     }
-                    return
+                } else {
+                    snapToBottom(proxy: proxy)
                 }
-
-                guard isHistoryInternallyScrollable(contentHeight: rounded) else { return }
-                if didAppendTurn {
-                    // A genuinely new turn supersedes any in-flight initial
-                    // restore; cancel it so the two scroll drivers don't fight.
-                    pendingInitialRestore?.cancel()
-                    pendingInitialRestore = nil
-                    scrollHistoryToBottom(proxy, animated: true)
-                } else if isLastTurnLive && shouldFollowLiveOutput {
-                    // Streaming-height ticks during the initial restore's
-                    // settle window must not cancel the deferred reassertion
-                    // (which lives in its own task slot). Skip until the
-                    // restore completes — it's the one positioning the
-                    // bottom; reasserting via the sentinel anchor here would
-                    // re-introduce the LazyVStack stale-offset bug.
-                    guard pendingInitialRestore == nil else { return }
-                    scrollHistoryToBottom(proxy, animated: false)
-                }
+            }
+            .onPreferenceChange(HistoryBottomMaxYKey.self) { y in
+                bottomSentinelMaxY = y.rounded()
+                scheduleFollowEval()
             }
         }
     }
 
+    /// Coalesce evaluation onto the next MainActor hop so the height
+    /// and sentinel preferences for the same layout pass are both
+    /// observed before judging — SwiftUI delivers the inner sentinel
+    /// preference before the outer height, and without batching the
+    /// evaluator sees a stale content height.
+    private func scheduleFollowEval() {
+        guard !followEvalPending else { return }
+        followEvalPending = true
+        Task { @MainActor in
+            await Task.yield()
+            followEvalPending = false
+            evaluateFollowState()
+        }
+    }
+
+    /// `userDelta = Δsentinel − Δcontent` isolates user-driven scroll
+    /// from layout-driven sentinel motion: detach when it crosses
+    /// `userDetachThreshold` upward, re-attach when the sentinel sits
+    /// within `atBottomSlack` of the viewport bottom.
+    private func evaluateFollowState() {
+        guard viewportHeight > 0 else { return }
+        let currentContentHeight = viewModel.historyContentHeight
+        let dy = bottomSentinelMaxY - prevBottomSentinelMaxY
+        let dh = currentContentHeight - prevContentHeight
+        // `max(0, dh)` so a content shrink doesn't masquerade as a fake
+        // user scroll.
+        let userDelta = dy - max(0, dh)
+
+        if followBottom && userDelta > userDetachThreshold {
+            followBottom = false
+        }
+
+        let isAtBottom = bottomSentinelMaxY <= viewportHeight + atBottomSlack
+        if isAtBottom && !followBottom {
+            followBottom = true
+        }
+
+        prevContentHeight = currentContentHeight
+        prevBottomSentinelMaxY = bottomSentinelMaxY
+    }
+
+    /// True while the last turn is still producing output (thinking,
+    /// awaiting a tool result, or streaming tokens). Used to
+    /// distinguish live growth from a user-driven row expansion.
     private var isLastTurnLive: Bool {
         guard let last = agentService.turns.last else { return false }
         switch last.status {
-        case .working, .waiting: return true
-        case .idle, .listening, .done, .error: return false
+        case .working, .waiting, .listening:
+            return true
+        case .done, .idle, .error:
+            return false
         }
     }
 
-    private func isHistoryInternallyScrollable(contentHeight: CGFloat) -> Bool {
-        let maxHistoryViewport = viewModel.notchOpenedMaxHeight
-            - viewModel.openedContentVerticalChrome
-            - viewModel.composerContentHeight
-        return contentHeight > maxHistoryViewport.rounded(.down)
-    }
-
-    private func updateLiveOutputFollowState() {
-        guard isHistoryInternallyScrollable(contentHeight: viewModel.historyContentHeight) else {
-            shouldFollowLiveOutput = true
-            pendingFollowDisable?.cancel()
-            pendingFollowDisable = nil
-            return
-        }
-
-        let isAtBottom = historyBottomMaxY <= historyViewportHeight + 4
-        if isAtBottom {
-            shouldFollowLiveOutput = true
-            pendingFollowDisable?.cancel()
-            pendingFollowDisable = nil
-            return
-        }
-
-        guard pendingHistoryScroll == nil else { return }
-        pendingFollowDisable?.cancel()
-        pendingFollowDisable = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            shouldFollowLiveOutput = false
-            pendingFollowDisable = nil
-        }
-    }
-
-    /// Snap to a specific turn's id with `.bottom` anchor. Used for the
-    /// initial restore-after-mount path where targeting a real row id (rather
-    /// than the post-LazyVStack sentinel) is critical for correct positioning.
-    /// Two scrolls: one immediate so the user never sees the top of a long
-    /// history, one after the open-transition settles to absorb any drift as
-    /// the panel's frame and the lazy stack's row heights finalize.
-    private func scrollHistoryToTurn(
-        _ turnID: String?,
-        proxy: ScrollViewProxy,
-        animated: Bool
-    ) {
-        guard let turnID else { return }
-        // Restore lives in its own task slot so live-follow's
-        // `pendingHistoryScroll?.cancel()` (triggered by streaming-height
-        // ticks on a still-`working` last turn) can't kill the settle-window
-        // reassertion below. Any in-flight prior restore is replaced here.
-        pendingInitialRestore?.cancel()
-        pendingFollowDisable?.cancel()
-        pendingFollowDisable = nil
-        pendingInitialRestore = Task { @MainActor in
+    private func snapToBottom(proxy: ScrollViewProxy) {
+        Task { @MainActor in
             await Task.yield()
-            guard !Task.isCancelled else { return }
             var txn = Transaction()
-            txn.disablesAnimations = !animated || reduceMotion
+            txn.disablesAnimations = true
             withTransaction(txn) {
-                proxy.scrollTo(turnID, anchor: .bottom)
-            }
-            // Open transition is `.notchHeight` (0.32s) on the silhouette
-            // height; wait it out, then snap once more so any LazyVStack
-            // row-height adjustments that landed during the animation can't
-            // leave a stale offset (the empty-area-until-you-scroll bug).
-            try? await Task.sleep(for: .milliseconds(360))
-            guard !Task.isCancelled else { return }
-            var settle = Transaction()
-            settle.disablesAnimations = true
-            withTransaction(settle) {
-                proxy.scrollTo(turnID, anchor: .bottom)
-            }
-            pendingInitialRestore = nil
-        }
-    }
-
-    private func scrollHistoryToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
-        pendingHistoryScroll?.cancel()
-        pendingFollowDisable?.cancel()
-        pendingFollowDisable = nil
-        // Defer one runloop turn (Task with no sleep coalesces to next
-        // MainActor hop) so the height-update preference and the scroll
-        // command don't fight each other inside the same SwiftUI
-        // transaction. Mirrors the previous DispatchQueue.main.async
-        // semantics but uses structured cancellation.
-        pendingHistoryScroll = Task { @MainActor in
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            if animated && !reduceMotion {
-                withAnimation(.smooth(duration: historyScrollAnimationDuration, extraBounce: 0)) {
-                    proxy.scrollTo(HistoryScrollAnchor.bottom, anchor: .bottom)
-                }
-                try? await Task.sleep(for: .seconds(historyScrollAnimationDuration))
-                pendingHistoryScroll = nil
-            } else {
-                var txn = Transaction()
-                txn.disablesAnimations = true
-                withTransaction(txn) {
-                    proxy.scrollTo(HistoryScrollAnchor.bottom, anchor: .bottom)
-                }
-                pendingHistoryScroll = nil
+                proxy.scrollTo(historyBottomAnchor, anchor: .bottom)
             }
         }
     }
 
-    /// One historical turn = compressed header + reply block + (optional
-    /// error banner). The header collapses chips down to just the app icon —
-    /// the live composer above already names the current app, so repeating
-    /// the name in every history row is redundant noise.
+    /// One historical turn: compressed header (app icon + prompt) over
+    /// an emoji-prefixed reply block, plus an optional error banner.
     private func turnRow(_ turn: ConversationTurn) -> some View {
-        // Build a tool-call lookup dictionary once per turn render so segment
-        // resolution is O(1) per segment rather than O(n) over `toolCalls`.
-        // For deeply tool-heavy turns this is a measurable improvement on
-        // streaming redraws.
+        // O(1) segment → tool-call resolution; matters on tool-heavy turns
+        // because every streaming token redraws every visible row.
         let toolCallById: [String: ToolCallRecord] = Dictionary(
             uniqueKeysWithValues: turn.toolCalls.map { ($0.id, $0) }
         )
@@ -596,12 +487,9 @@ struct OpenedPanelView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                 VStack(alignment: .leading, spacing: 6) {
-                    // Render segments in the order the sidecar emitted them
-                    // so thinking, tool calls, and reply chunks interleave the
-                    // way the model produced them — instead of being grouped
-                    // into a fixed thinking → tools → reply layout. Segment
-                    // ids are stable (UUID for thinking/reply, `toolCallId`
-                    // for tool calls) so SwiftUI preserves each row's local
+                    // Segments render in emission order so thinking / tool
+                    // calls / reply chunks interleave as the model produced
+                    // them. IDs are stable so SwiftUI preserves per-row
                     // state across redraws.
                     ForEach(turn.segments) { segment in
                         segmentView(segment, toolCallById: toolCallById)
@@ -649,12 +537,8 @@ struct OpenedPanelView: View {
         }
     }
 
-    /// Per-turn emoji. Mirrors the previous session-region mapping, but reads
-    /// the turn's own status (not the global `status`) so older completed
-    /// turns keep `:D` even while a newer turn is mid-`:O` streaming. While a
-    /// turn is in the "thinking, no tokens yet" state we render an animated
-    /// `:/` ↔ `:\` flip via TimelineView so the user sees a heartbeat instead
-    /// of a static glyph.
+    /// Per-turn emoji driven by the turn's own status. While the turn
+    /// is thinking with no tokens yet, animate a `:/` ↔ `:\` heartbeat.
     @ViewBuilder
     private func turnEmojiView(_ turn: ConversationTurn) -> some View {
         if turn.status == .working && turn.reply.isEmpty && !reduceMotion {
@@ -680,20 +564,14 @@ struct OpenedPanelView: View {
     }
 }
 
-private enum HistoryScrollAnchor: Hashable {
-    case bottom
-}
-
-private enum HistoryCoordinateSpace: Hashable {
-    case viewport
-}
+private let historyBottomAnchor = "history.bottom"
+private let historyViewportSpace = "history.viewport"
 
 // MARK: - ReplyMarkdownView
 //
-// Equatable wrapper around MarkdownUI's `Markdown` so SwiftUI skips re-
-// parsing when the reply text hasn't changed. Without this, every streaming
-// token on the *last* turn re-evaluates `Markdown(s.text)` for every
-// *visible* turn — O(visible × tokens) markdown parses per turn.
+// Equatable wrapper around `Markdown` so SwiftUI skips re-parsing when text
+// hasn't changed — otherwise every streaming token re-parses every visible
+// turn (O(visible × tokens)).
 private struct ReplyMarkdownView: View, Equatable {
     let text: String
 
@@ -707,8 +585,6 @@ private struct ReplyMarkdownView: View, Equatable {
     }
 }
 
-/// Natural height of the history VStack inside the ScrollView. Reported up
-/// to NotchViewModel so the silhouette grows alongside the content.
 private struct HistoryHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -730,8 +606,6 @@ private struct HistoryBottomMaxYKey: PreferenceKey {
     }
 }
 
-/// Natural height of the composer (chips + input). Combined with the
-/// history height to derive the panel's desired size.
 private struct ComposerHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -740,12 +614,6 @@ private struct ComposerHeightKey: PreferenceKey {
 }
 
 // MARK: - Markdown theme
-//
-// Matches the rest of the panel: monospaced 13pt, white at 0.9 opacity.
-// Code spans/blocks add a subtle background so they read as code without
-// breaking the panel's dark visual register. Headings scale relative to the
-// body so an `# H1` from the model still looks like a heading inside what is
-// otherwise a compact, terminal-feeling surface.
 extension Theme {
     static let aosNotchPanel: Theme = Theme()
         .text {
@@ -821,10 +689,9 @@ extension Theme {
         }
 }
 
-// Image providers that render nothing. Reply text is untrusted LLM output;
-// using MarkdownUI's default providers would fetch any URL the model emits in
-// `![](…)`, turning the Notch UI into an outbound beacon (prompt-injection →
-// IP/online-state/timing leak). Block both block-level and inline images.
+// Reply text is untrusted LLM output; the default MarkdownUI providers
+// would fetch any URL the model emits in `![](…)`, turning the panel into
+// an outbound beacon (prompt-injection → IP/online-state/timing leak).
 private struct BlockedImageProvider: ImageProvider {
     func makeImage(url: URL?) -> some View { EmptyView() }
 }
