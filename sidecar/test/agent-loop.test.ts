@@ -409,10 +409,17 @@ test("cancel path: agent.cancel aborts the stream and emits status done", async 
   const tokens = captured.notifications.filter((n) => n.method === "ui.token");
   expect(tokens).toHaveLength(1);
 
-  // Conversation marks the turn cancelled so the next request's
-  // llmMessages() drops it (a half-streamed reply is dead context).
+  // Turn is marked cancelled. The slice is preserved (user prompt +
+  // synthetic interrupt marker) so the next prompt continues from real
+  // context rather than starting cold. The half-streamed assistant text
+  // never made it to `appendAssistant` (no `done` from the provider yet),
+  // so it stays out of LLM history naturally.
   expect(convo.turns[0].status).toBe("cancelled");
-  expect(convo.llmMessages()).toEqual([]);
+  const cancelMsgs = convo.llmMessages();
+  expect(cancelMsgs).toHaveLength(2);
+  expect(cancelMsgs[0].role).toBe("user");
+  expect(cancelMsgs[1].role).toBe("user");
+  expect(cancelMsgs[1].content as string).toContain("interrupted");
 });
 
 test("error path: typed authInvalidated reason maps to permissionDenied", async () => {

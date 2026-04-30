@@ -37,6 +37,14 @@ import type {
 } from "../rpc/rpc-types";
 import { buildUserMessage } from "./prompt";
 
+/// Synthetic user-role text appended at the end of a cancelled turn's slice.
+/// Tells the next LLM round explicitly that the user pressed stop, rather
+/// than letting it infer from a half-finished transcript. Kept terse so
+/// it doesn't dominate prompt context, and stable so `finalizeCancellation`
+/// can detect "already finalized" by comparing the last message.
+const INTERRUPT_MARKER_TEXT =
+  "[The user interrupted the conversation here.]";
+
 export interface ConversationTurn {
   id: string;
   prompt: string;
@@ -91,7 +99,8 @@ export class Conversation {
   }
 
   /// Test / observability accessor — the raw flat history. Loop callers
-  /// should go through `llmMessages()` so cancelled turns are filtered.
+  /// should go through `llmMessages()` so the preface is prepended and
+  /// stale screenshots are stripped.
   get messages(): ReadonlyArray<Message> {
     return this._messages;
   }
@@ -198,6 +207,79 @@ export class Conversation {
     return true;
   }
 
+  /// Finalize a user-cancelled turn so its slice stays in `llmMessages()`
+  /// without breaking provider invariants. Two pieces:
+  ///
+  ///   1. Synthesize "Cancelled by user" tool_results for every orphan
+  ///      tool_use in the turn's slice. Cancellation can fire mid
+  ///      tool-loop, leaving the assistant's `tool_use` blocks for tools
+  ///      the loop never got to execute — sending the slice to the
+  ///      provider as-is would error (orphan tool_use without tool_result).
+  ///
+  ///   2. Append a synthetic user-role marker so the next round sees an
+  ///      explicit "the user interrupted here" signal instead of a silently
+  ///      truncated transcript. Without this the model would keep going as
+  ///      if its previous reply was fine.
+  ///
+  /// Idempotent: a second call (e.g. cancel handler raced the loop's
+  /// terminal site) is a no-op. Safe to call without first calling
+  /// `setStatus("cancelled")` — the method flips status itself.
+  finalizeCancellation(turnId: string): boolean {
+    const t = this.find(turnId);
+    if (!t) return false;
+    if (this.hasInterruptMarker(t)) {
+      t.status = "cancelled";
+      return true;
+    }
+
+    const toolUses = new Map<string, ToolCall>();
+    const haveResultFor = new Set<string>();
+    for (let i = t.messageStart; i < t.messageEnd; i++) {
+      const m = this._messages[i]!;
+      if (m.role === "assistant") {
+        for (const c of m.content) {
+          if (c.type === "toolCall") toolUses.set(c.id, c);
+        }
+      } else if (m.role === "toolResult") {
+        haveResultFor.add(m.toolCallId);
+      }
+    }
+
+    const now = Date.now();
+    for (const [id, tc] of toolUses) {
+      if (haveResultFor.has(id)) continue;
+      const cancelled: ToolResultMessage = {
+        role: "toolResult",
+        toolCallId: id,
+        toolName: tc.name,
+        content: [{ type: "text", text: "Cancelled by user" }],
+        isError: true,
+        timestamp: now,
+      };
+      this._messages.push(cancelled);
+      t.messageEnd = this._messages.length;
+    }
+
+    this._messages.push({
+      role: "user",
+      content: INTERRUPT_MARKER_TEXT,
+      timestamp: now,
+    });
+    t.messageEnd = this._messages.length;
+    t.status = "cancelled";
+    return true;
+  }
+
+  private hasInterruptMarker(t: ConversationTurn): boolean {
+    if (t.messageEnd <= t.messageStart) return false;
+    const last = this._messages[t.messageEnd - 1]!;
+    return (
+      last.role === "user" &&
+      typeof last.content === "string" &&
+      last.content === INTERRUPT_MARKER_TEXT
+    );
+  }
+
 /// Compact-replace history. Called after the LLM has produced a summary
   /// of all messages strictly preceding the current (last) turn.
   ///
@@ -283,13 +365,15 @@ export class Conversation {
   }
 
   /// True iff there is any LLM-visible content to summarize: at least
-  /// one non-cancelled turn, or a non-empty preface from a prior
-  /// compactAll pass. Used by both auto and manual entry points to
-  /// gate "no prior history" early-out vs. an LLM call that would
-  /// throw on empty input.
+  /// one turn, or a non-empty preface from a prior compactAll pass. Used
+  /// by both auto and manual entry points to gate "no prior history"
+  /// early-out vs. an LLM call that would throw on empty input.
+  /// Cancelled turns count — `finalizeCancellation` keeps their slice
+  /// (user prompt + work done before the cancel + interrupt marker), all
+  /// of which is meaningful context for the summarizer.
   hasContentToCompact(): boolean {
     if (this._preface.length > 0) return true;
-    return this._turns.some((t) => t.status !== "cancelled");
+    return this._turns.length > 0;
   }
 
   /// Manual-path counterpart to `compact()`. Folds EVERY turn (and any
@@ -321,15 +405,19 @@ export class Conversation {
     return { compactedTurnCount };
   }
 
-  /// LLM-facing message list. Drops `cancelled` turns (user-abandoned
-  /// partial work). Errored turns are kept so a transient failure (network,
-  /// 5xx, auth) doesn't wipe the prompt + pre-error progress on retry —
-  /// the loop is responsible for keeping each preserved slice replayable
-  /// (no orphan `tool_use`).
+  /// LLM-facing message list. ALL turns contribute their slice — including
+  /// `cancelled` turns. A user-cancel earlier in the session should not
+  /// erase the work that preceded the cancel point; instead
+  /// `finalizeCancellation` rewrote the cancelled turn's slice to be
+  /// replayable (orphan `tool_use` filled with synthetic results) and
+  /// appended an explicit interrupt marker so the next round sees "the
+  /// user pressed stop here" rather than a silently truncated transcript.
+  /// Errored turns are kept too so a transient failure (network, 5xx,
+  /// auth) doesn't wipe the prompt + pre-error progress on retry — the
+  /// loop is responsible for keeping each preserved slice replayable.
   llmMessages(): Message[] {
     const out: Message[] = [...this._preface];
     for (const t of this._turns) {
-      if (t.status === "cancelled") continue;
       for (let i = t.messageStart; i < t.messageEnd; i++) {
         out.push(this._messages[i]);
       }

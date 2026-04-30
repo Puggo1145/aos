@@ -79,11 +79,11 @@ export async function compactConversation(
   const mode = options?.mode ?? "auto";
 
   // Source the history through `llmMessages()` rather than the raw
-  // `_messages` buffer: that view drops cancelled turns (so user-abandoned
-  // partial work doesn't get folded back into the summary, defeating the
-  // cancel) and strips superseded computer_use screenshots (so the
-  // summarizer doesn't have to re-ingest the exact oversized image
-  // history compaction is meant to relieve).
+  // `_messages` buffer: that view prepends the preface, normalizes
+  // cancelled turns (orphan tool_use filled + interrupt marker), and
+  // strips superseded computer_use screenshots (so the summarizer doesn't
+  // have to re-ingest the exact oversized image history compaction is
+  // meant to relieve).
   //
   // Auto vs. manual scope:
   //   - Auto runs at runTurn entry. The last turn is the brand-new
@@ -115,8 +115,8 @@ export async function compactConversation(
     const activeSliceLen = activeTurn.messageEnd - activeTurn.messageStart;
     priorMessages = allFiltered.slice(0, allFiltered.length - activeSliceLen);
     if (priorMessages.length === 0) {
-      // No prior history (active turn is first) or all prior turns
-      // cancelled — nothing meaningful to summarize.
+      // No prior history (active turn is first) — nothing meaningful to
+      // summarize.
       throw new Error("compactConversation: no prior history to compact");
     }
     activeTurnId = activeTurn.id;

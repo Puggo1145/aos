@@ -266,9 +266,13 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
     const session = resolveSession(sessionId);
     const cancelled = session.turns.abort(turnId);
     if (cancelled) {
-      // Mark the turn cancelled so future `llmMessages()` builds skip it.
-      // The boolean return is an `unknown turnId` no-op — only happens if
-      // the turn was concurrently reset, which is a tolerated race.
+      // Flip status now so the Shell mirror can render the turn as
+      // cancelled before the loop reaches its terminal cancel site. The
+      // slice-level cleanup (orphan tool_use fill + interrupt marker) is
+      // deferred to `runTurn`'s cancel sites: doing it here would race
+      // with any tool result the loop is about to append between the
+      // signal firing and the loop noticing it. The loop calls
+      // `finalizeCancellation` once it has stopped touching the slice.
       session.conversation.setStatus(turnId, "cancelled");
     }
     return { cancelled };
@@ -672,10 +676,17 @@ export async function runTurn(
       if (bailed || signal.aborted) {
         // Cancellation path. `agent.cancel` already flipped the turn to
         // `cancelled` and the visible reply has been mirrored via ui.token.
-        // Close the reasoning block (if any) and surface the terminal
-        // status; do NOT call `markDone` (we didn't complete normally) and
-        // do NOT call `onDone` (turnCount stays put).
+        // Close the reasoning block (if any) and finalize the turn's slice
+        // — we may have one or more completed assistant+toolResult rounds
+        // ahead of this aborted stream that should stay in history; the
+        // finalize step appends the interrupt marker so the next round
+        // sees an explicit "user pressed stop" signal. No orphan tool_use
+        // here because the in-flight round never reached `appendAssistant`,
+        // but `finalizeCancellation` handles either case. Then surface
+        // the terminal status; do NOT call `markDone` (we didn't complete
+        // normally) and do NOT call `onDone` (turnCount stays put).
         closeThinkingIfOpen();
+        convo.finalizeCancellation(turnId);
         dispatcher.notify(RPCMethod.uiStatus, { sessionId, turnId, status: "done" });
         return;
       }
@@ -914,8 +925,15 @@ export async function runTurn(
       }
 
       if (signal.aborted) {
-        // Cancellation surfaced during tool execution. Close out the same
-        // way as the streaming-cancel path above.
+        // Cancellation surfaced during tool execution. The for-loop above
+        // breaks at the top of an iteration, so any tool we already
+        // started has its result appended; tools we never iterated leave
+        // orphan `tool_use` blocks on the assistant message that just
+        // landed. Finalize the slice — synthesize cancelled tool_results
+        // for those orphans and append the interrupt marker — before the
+        // terminal status, otherwise the next round's request would carry
+        // un-paired `tool_use` and the provider would reject it.
+        convo.finalizeCancellation(turnId);
         dispatcher.notify(RPCMethod.uiStatus, { sessionId, turnId, status: "done" });
         return;
       }
