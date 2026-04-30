@@ -184,6 +184,62 @@ public struct ToolCallRecord: Identifiable, Sendable, Equatable {
     public var outputText: String?
 }
 
+/// One compact-pass mirror entry. Built from `ui.compact` lifecycle
+/// frames (auto path from `runTurn` entry, or manual `agent.compact`).
+///
+/// Placement uses "render AFTER this turn" semantics — `afterTurnId` is
+/// the id of the most recent turn that already existed when the compact
+/// pass was triggered. The history view emits the divider immediately
+/// after that turn's row, so anything submitted later (including the
+/// auto path's brand-new turn that triggered compact) appears BELOW the
+/// divider in chronological order. `nil` means "no prior turn" — rare,
+/// only happens if compact were ever to fire on an empty mirror — and
+/// renders at the very top.
+///
+/// Why `afterTurnId` and not `beforeTurnId`:
+///   - Manual `/compact` runs from idle. The user's next prompt should
+///     appear BELOW the divider (the divider stays pinned to where the
+///     compact happened). With "before" semantics anchored to "the next
+///     turn that comes along", any later submission would push the
+///     divider downward forever; with "after" semantics the divider
+///     is glued to the historical turn that bounded the compact.
+///   - Auto-compact's new turn is already in the mirror when `started`
+///     arrives (the sidecar registers the turn before kicking off
+///     runTurn, then runTurn fires `ui.compact { started }`). We
+///     resolve `afterTurnId` to "the turn just before the new one" so
+///     the divider lands between the prior history and the new turn.
+///
+/// Status:
+///   - `.running` while the summarizer LLM call is in flight. The
+///     divider shows "compacting context" with a left→right shimmer.
+///   - `.done` once the sidecar reports completion. The marker stops
+///     animating and remains in history as a milestone.
+///   - `failed` is not stored — `applyCompact` removes the event on
+///     `failed` instead of carrying a tombstone, since a stale "compact
+///     failed" divider in the middle of an otherwise normal
+///     conversation is more noise than signal.
+public struct CompactEvent: Identifiable, Sendable, Equatable {
+    public enum Status: Sendable, Equatable {
+        case running
+        case done
+    }
+
+    public let id: String
+    /// Turn id the divider should render AFTER. `nil` puts it at the
+    /// very top of history (no prior turn existed at compact time).
+    public let afterTurnId: String?
+    public var status: Status
+    /// Filled in on the `.done` frame. `nil` while running.
+    public var compactedTurnCount: Int?
+
+    public init(id: String, afterTurnId: String?, status: Status, compactedTurnCount: Int?) {
+        self.id = id
+        self.afterTurnId = afterTurnId
+        self.status = status
+        self.compactedTurnCount = compactedTurnCount
+    }
+}
+
 /// Per-session snapshot of the most recent `ui.usage` frame. The composer's
 /// context-usage ring reads this directly. "Used context" for ring/percentage
 /// purposes is `inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens`
@@ -418,6 +474,12 @@ public final class AgentService {
     public var todos: [TodoItemWire] {
         sessionStore.activeMirror?.todos ?? []
     }
+    /// Active session's compact-pass markers, in emit order. Drives the
+    /// "context compacted" divider blocks the history view interleaves
+    /// with turns. Empty until the first `ui.compact { started }` frame.
+    public var compactEvents: [CompactEvent] {
+        sessionStore.activeMirror?.compactEvents ?? []
+    }
 
     public var currentSessionId: String? { sessionStore.activeId }
 
@@ -490,6 +552,9 @@ public final class AgentService {
         }
         rpc.registerNotificationHandler(method: RPCMethod.uiTodo) { [weak self] (params: UITodoParams) in
             await self?.handleTodo(params)
+        }
+        rpc.registerNotificationHandler(method: RPCMethod.uiCompact) { [weak self] (params: UICompactParams) in
+            await self?.handleCompact(params)
         }
     }
 
@@ -596,6 +661,27 @@ public final class AgentService {
         )
     }
 
+    /// Manual `/compact` entry. Asks the sidecar to summarize prior
+    /// history right now. Sidecar emits the same `ui.compact { started →
+    /// done | failed }` lifecycle as the auto path; the active mirror
+    /// picks those up and surfaces a divider block in history.
+    /// Errors propagate to the active mirror's submit-error banner so
+    /// the user sees what went wrong (e.g. "in-flight turn" rejection).
+    public func compactSession() async {
+        guard let sessionId = currentSessionId, let mirror = sessionStore.activeMirror else {
+            return
+        }
+        do {
+            _ = try await rpc.request(
+                method: RPCMethod.agentCompact,
+                params: AgentCompactParams(sessionId: sessionId),
+                as: AgentCompactResult.self
+            )
+        } catch {
+            mirror.setSubmitError(Self.formatSubmitFailureMessage(error: error))
+        }
+    }
+
     // MARK: - Notification handlers
     //
     // Each handler routes by `sessionId` to the matching mirror in
@@ -639,6 +725,10 @@ public final class AgentService {
 
     internal func handleTodo(_ p: UITodoParams) {
         sessionStore.mirror(for: p.sessionId).applyTodo(p)
+    }
+
+    internal func handleCompact(_ p: UICompactParams) {
+        sessionStore.mirror(for: p.sessionId).applyCompact(p)
     }
 
     // MARK: - Test seams

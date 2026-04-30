@@ -71,6 +71,11 @@ const INBOUND_HANDLER_TIMEOUTS: Record<string, number> = {
   "rpc.ping": 1_000,
   "agent.submit": 1_000, // ack budget; the streaming work is detached
   "agent.cancel": 1_000,
+  // Manual /compact awaits a full summarization LLM round inline. The Shell
+  // side allows 120s (RPCClient.timeout); pad slightly so the dispatcher
+  // doesn't ErrTimeout before the Shell does, which would leave the handler
+  // racing on detached work while the user already saw a failure.
+  "agent.compact": 130_000,
 };
 
 const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;

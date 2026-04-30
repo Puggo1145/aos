@@ -73,6 +73,12 @@ final class ChipInputModel {
     /// `displayText` is still empty.
     var isStorageEmpty: Bool = true
 
+    /// Number of clipboard chip attachments currently in the storage.
+    /// Maintained alongside `displayText` / `isStorageEmpty` so callers
+    /// (e.g. the slash-command palette gate) can ask about chips
+    /// without walking the attributed-string themselves.
+    var attachmentCount: Int = 0
+
     /// Trimmed-text emptiness — the gate the send button uses. Kept
     /// separate from `isStorageEmpty` because the two answer different
     /// product questions (LLM contract vs. visual placeholder).
@@ -115,6 +121,7 @@ final class ChipInputModel {
         persistedStorage = NSAttributedString(string: "")
         displayText = ""
         isStorageEmpty = true
+        attachmentCount = 0
     }
 
     /// Capture the live storage into the persisted snapshot. Called from
@@ -133,9 +140,32 @@ struct ChipInputView: NSViewRepresentable {
     var textColor: NSColor
     var onSubmit: () -> Void
     var onFocusChange: (Bool) -> Void
+    /// Optional palette routing. When provided and `paletteIsActive()`
+    /// returns true at keystroke time:
+    ///   - Up / Down arrows are intercepted and forwarded to the palette
+    ///     instead of moving the text cursor.
+    ///   - Enter routes through `paletteEnter()` first; if it returns
+    ///     true (palette consumed it — typically by executing the
+    ///     selected command), the default `onSubmit` is suppressed for
+    ///     that keystroke.
+    ///   - Escape calls `paletteEscape()` to deactivate the palette.
+    /// Composers without a palette pass `nil` for these and the field
+    /// behaves as before.
+    var paletteIsActive: (() -> Bool)? = nil
+    var paletteNavigate: ((CommandPaletteState.NavigationDirection) -> Void)? = nil
+    var paletteEnter: (() -> Bool)? = nil
+    var paletteEscape: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(model: model, onSubmit: onSubmit, onFocusChange: onFocusChange)
+        Coordinator(
+            model: model,
+            onSubmit: onSubmit,
+            onFocusChange: onFocusChange,
+            paletteIsActive: paletteIsActive,
+            paletteNavigate: paletteNavigate,
+            paletteEnter: paletteEnter,
+            paletteEscape: paletteEscape
+        )
     }
 
     func makeNSView(context: Context) -> _ChipTextView {
@@ -172,12 +202,16 @@ struct ChipInputView: NSViewRepresentable {
             storage.setAttributedString(model.persistedStorage)
             model.isStorageEmpty = storage.length == 0
             var plain = ""
+            var chipCount = 0
             storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length)) { attrs, range, _ in
                 if attrs[.attachment] == nil {
                     plain += storage.attributedSubstring(from: range).string
+                } else {
+                    chipCount += range.length
                 }
             }
             model.displayText = plain
+            model.attachmentCount = chipCount
             // Park the cursor at the end so the user keeps typing where
             // they left off.
             textView.setSelectedRange(NSRange(location: storage.length, length: 0))
@@ -196,6 +230,10 @@ struct ChipInputView: NSViewRepresentable {
         ]
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onFocusChange = onFocusChange
+        context.coordinator.paletteIsActive = paletteIsActive
+        context.coordinator.paletteNavigate = paletteNavigate
+        context.coordinator.paletteEnter = paletteEnter
+        context.coordinator.paletteEscape = paletteEscape
     }
 
     @MainActor
@@ -203,15 +241,27 @@ struct ChipInputView: NSViewRepresentable {
         let model: ChipInputModel
         var onSubmit: () -> Void
         var onFocusChange: (Bool) -> Void
+        var paletteIsActive: (() -> Bool)?
+        var paletteNavigate: ((CommandPaletteState.NavigationDirection) -> Void)?
+        var paletteEnter: (() -> Bool)?
+        var paletteEscape: (() -> Void)?
 
         init(
             model: ChipInputModel,
             onSubmit: @escaping () -> Void,
-            onFocusChange: @escaping (Bool) -> Void
+            onFocusChange: @escaping (Bool) -> Void,
+            paletteIsActive: (() -> Bool)? = nil,
+            paletteNavigate: ((CommandPaletteState.NavigationDirection) -> Void)? = nil,
+            paletteEnter: (() -> Bool)? = nil,
+            paletteEscape: (() -> Void)? = nil
         ) {
             self.model = model
             self.onSubmit = onSubmit
             self.onFocusChange = onFocusChange
+            self.paletteIsActive = paletteIsActive
+            self.paletteNavigate = paletteNavigate
+            self.paletteEnter = paletteEnter
+            self.paletteEscape = paletteEscape
         }
 
         func textDidChange(_ notification: Notification) {
@@ -221,18 +271,57 @@ struct ChipInputView: NSViewRepresentable {
             // attachment runs — the placeholder is "is there typed text",
             // not "are there chips".
             var plain = ""
+            var chipCount = 0
             let full = NSRange(location: 0, length: storage.length)
             storage.enumerateAttributes(in: full) { attrs, range, _ in
                 if attrs[.attachment] == nil {
                     plain += storage.attributedSubstring(from: range).string
+                } else {
+                    // Each `.attachment` run contains one attachment
+                    // character per glyph (range.length, conventionally 1).
+                    chipCount += range.length
                 }
             }
             model.displayText = plain
             model.isStorageEmpty = storage.length == 0
+            model.attachmentCount = chipCount
             model.capture(from: storage)
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            // Palette routing: Up / Down / Enter / Escape are
+            // intercepted ONLY while the palette gate is active. Outside
+            // command mode the field behaves exactly as before — Up /
+            // Down move the cursor, Esc has no special meaning, Enter
+            // submits.
+            let paletteOn = paletteIsActive?() ?? false
+            if paletteOn {
+                if commandSelector == #selector(NSResponder.moveUp(_:)) {
+                    paletteNavigate?(.up)
+                    return true
+                }
+                if commandSelector == #selector(NSResponder.moveDown(_:)) {
+                    paletteNavigate?(.down)
+                    return true
+                }
+                if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                    paletteEscape?()
+                    return true
+                }
+                if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                    if paletteEnter?() == true {
+                        // Palette consumed Enter (typically by executing
+                        // the highlighted command). Don't fall through
+                        // into the regular submit path.
+                        return true
+                    }
+                    // Palette is open with no match (e.g. `/zzz`). Swallow
+                    // Enter rather than calling onSubmit — the composer's
+                    // submit gate only checks emptiness/busy and would
+                    // otherwise ship the literal slash text to the agent.
+                    return true
+                }
+            }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 onSubmit()
                 return true

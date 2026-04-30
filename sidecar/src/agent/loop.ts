@@ -60,6 +60,8 @@ import {
   type AgentCancelResult,
   type AgentResetParams,
   type AgentResetResult,
+  type AgentCompactParams,
+  type AgentCompactResult,
   type JSONValue,
 } from "../rpc/rpc-types";
 import { Dispatcher, RPCMethodError } from "../rpc/dispatcher";
@@ -71,6 +73,7 @@ import { Session } from "./session/session";
 import { toolRegistry, ToolUserError, type ToolHandler, type ToolExecResult } from "./tools";
 import { type TodoItem } from "./todos/manager";
 import { renderAmbient } from "./ambient";
+import { autoCompactIfNeeded, compactBreaker, compactConversation, COMPACT_NOOP_EMPTY } from "./compact";
 import { buildSystemPrompt } from "./system-prompt";
 import { logger } from "../log";
 
@@ -271,6 +274,67 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
     return { cancelled };
   });
 
+  dispatcher.registerRequest(RPCMethod.agentCompact, async (raw): Promise<AgentCompactResult> => {
+    // Manual `/compact` entry. Layer 3 of the compact stack: user
+    // explicitly asks for a context-compact pass right now. Differences
+    // from the auto path (`autoCompactIfNeeded` inside runTurn):
+    //   - Bypasses the auto-compact breaker. Manual intent overrides
+    //     past auto failures; a user repeatedly hitting `/compact` after
+    //     transient summarizer errors shouldn't be silently gated.
+    //   - Rejected if a turn is in flight on this session — that would
+    //     interleave a second LLM stream with the running runTurn's
+    //     stream, plus the active turn's slice would shift mid-stream.
+    //   - Wire turnId on the lifecycle frames is the empty string. There
+    //     is no "next turn" the marker should visually precede; Shell
+    //     renders the marker at the tail of history.
+    const { sessionId } = (raw ?? {}) as AgentCompactParams;
+    const session = resolveSession(sessionId);
+    if (session.turns.size > 0) {
+      throw new RPCMethodError(
+        RPCErrorCode.invalidRequest,
+        `session ${session.id} has an in-flight turn; cancel or wait before compacting`,
+      );
+    }
+    const model = modelResolver();
+    const lifecycleTurnId = "";
+    dispatcher.notify(RPCMethod.uiCompact, {
+      sessionId: session.id,
+      turnId: lifecycleTurnId,
+      phase: "started",
+    });
+    try {
+      const result = await compactConversation(session, model, { mode: "manual" });
+      if (result === COMPACT_NOOP_EMPTY) {
+        // Documented short-circuit: empty session, nothing to fold. Emit
+        // a `done` with no count so the Shell's lifecycle still closes
+        // cleanly and any in-progress divider goes away.
+        dispatcher.notify(RPCMethod.uiCompact, {
+          sessionId: session.id,
+          turnId: lifecycleTurnId,
+          phase: "done",
+        });
+        return { ok: true };
+      }
+      dispatcher.notify(RPCMethod.uiCompact, {
+        sessionId: session.id,
+        turnId: lifecycleTurnId,
+        phase: "done",
+        compactedTurnCount: result.compactedTurnCount,
+      });
+      return { ok: true, compactedTurnCount: result.compactedTurnCount };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error("manual compact failed", { sessionId: session.id, err: String(err) });
+      dispatcher.notify(RPCMethod.uiCompact, {
+        sessionId: session.id,
+        turnId: lifecycleTurnId,
+        phase: "failed",
+        errorMessage: message,
+      });
+      throw new RPCMethodError(RPCErrorCode.internalError, message);
+    }
+  });
+
   dispatcher.registerRequest(RPCMethod.agentReset, async (raw): Promise<AgentResetResult> => {
     const { sessionId } = (raw ?? {}) as AgentResetParams;
     const session = resolveSession(sessionId);
@@ -280,6 +344,10 @@ export function registerAgentHandlers(dispatcher: Dispatcher, opts: RegisterAgen
     // empty list so the Shell's todo panel collapses in lockstep with the
     // history.
     session.todos.clear();
+    // s06: drop the compact breaker too. A reset session starts fresh —
+    // any auto-compact failures from the prior history must not carry
+    // over and silently disable compaction for the new run.
+    compactBreaker.forget(session.id);
     dispatcher.notify(RPCMethod.conversationReset, { sessionId: session.id });
     dispatcher.notify(RPCMethod.uiTodo, { sessionId: session.id, items: [] });
     // turnCount/lastActivityAt regress; surface to history list.
@@ -421,6 +489,54 @@ export async function runTurn(
   });
 
   try {
+    // s06 auto-compact: at turn entry, before any LLM round, check
+    // whether the running estimate of remaining context (`contextWindow
+    // - lastTotalTokens`) has fallen under the threshold. If yes,
+    // summarize all prior history into one synthetic user message and
+    // re-anchor the active turn on top. The breaker (3 consecutive
+    // failures = disabled for this session) gates the auto path; the
+    // wrapper does its own breaker accounting and short-circuits cleanly
+    // when there is no prior history to compact.
+    //
+    // Failures here are non-fatal: we surface `ui.compact failed` for
+    // observability and let the turn proceed with the original history.
+    // The next round may overflow and surface as `agentContextOverflow`,
+    // but at least one of "auto-compact ran" / "explicit overflow error"
+    // happens — the user is never silently stuck.
+    // `started` fires inside `onStart` — only after all skip gates pass
+    // and immediately before the summarization LLM call begins. This
+    // pairs every `started` with a matching `done` or `failed`; sending
+    // `started` unconditionally up here would leave the Shell hanging on
+    // a half-open lifecycle for every turn where compaction was a no-op.
+    try {
+      const result = await autoCompactIfNeeded(session, model, {
+        signal,
+        onStart: () => {
+          dispatcher.notify(RPCMethod.uiCompact, { sessionId, turnId, phase: "started" });
+        },
+      });
+      if (result) {
+        dispatcher.notify(RPCMethod.uiCompact, {
+          sessionId,
+          turnId,
+          phase: "done",
+          compactedTurnCount: result.compactedTurnCount,
+        });
+      }
+      // result === null is the silent-skip path: under threshold, breaker
+      // disabled, or no prior history. No `started` was emitted, so no
+      // closer is owed.
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error("auto-compact failed", { sessionId, turnId, err: String(err) });
+      dispatcher.notify(RPCMethod.uiCompact, {
+        sessionId,
+        turnId,
+        phase: "failed",
+        errorMessage: message,
+      });
+    }
+
     // Counts tool rounds since the assistant last emitted visible text.
     // Reset on any round whose final AssistantMessage carries a non-empty
     // text content block; incremented on each tool-bearing round. When it
@@ -598,6 +714,21 @@ export async function runTurn(
         // matches the appendDelta race policy.
         return;
       }
+
+      // s06: capture the provider-reported `totalTokens` figure on the
+      // Conversation so the next turn's auto-compact threshold check has
+      // a recent baseline to subtract from `model.contextWindow`. We
+      // record the *total* — input + output + cacheRead + cacheWrite —
+      // not just `usage.input`, because (a) `input` is the uncached
+      // delta only and drastically underestimates prompt fill once
+      // prompt caching is in use, and (b) the assistant `output` we
+      // just got is appended into history and will be part of the next
+      // request's prompt, so it must be counted toward the next round's
+      // ceiling estimate. This matches the same figure the UI ring shows.
+      // This is the only durable place we record token usage — the wire
+      // `ui.usage` notification below is for live UI rendering, not
+      // server-side state.
+      convo.recordTotalTokens(final.usage.totalTokens);
 
       // Surface usage to the Shell composer's context-usage ring. Fired
       // PER round (not once per turn) so multi-round tool flows show the

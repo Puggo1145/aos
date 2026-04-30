@@ -41,6 +41,12 @@ public struct TrayItem: Identifiable {
     /// the pre-refactor system-notice CTA behaviour. `nil` means the row
     /// is purely informational.
     public let onTap: (@MainActor () -> Void)?
+    /// Row is the keyboard-cursor selection. Used by the slash-command
+    /// palette to mark the row Up/Down arrows are currently parked on.
+    /// SystemTrayView paints highlighted rows with an inverted background
+    /// so the keyboard cursor is visually unambiguous; ordinary tray
+    /// notices never set this.
+    public let highlighted: Bool
 
     public init(
         id: String,
@@ -49,7 +55,8 @@ public struct TrayItem: Identifiable {
         message: String,
         trailing: TrayItemTrailing? = nil,
         dismissable: Bool = true,
-        onTap: (@MainActor () -> Void)? = nil
+        onTap: (@MainActor () -> Void)? = nil,
+        highlighted: Bool = false
     ) {
         self.id = id
         self.icon = icon
@@ -58,6 +65,7 @@ public struct TrayItem: Identifiable {
         self.trailing = trailing
         self.dismissable = dismissable
         self.onTap = onTap
+        self.highlighted = highlighted
     }
 }
 
@@ -99,4 +107,8 @@ public enum BuiltinTrayItemID {
     public static let missingProvider = "system.missingProvider"
     public static let configCorruption = "system.configCorruption"
     public static let todoProgress = "agent.todoProgress"
+    /// Slash-command palette rows. The drawer hosts these directly while
+    /// the user is in command mode; the suffix is the command's slug so
+    /// each match has a stable diff key (e.g. `"command.compact"`).
+    public static let commandPrefix = "command."
 }

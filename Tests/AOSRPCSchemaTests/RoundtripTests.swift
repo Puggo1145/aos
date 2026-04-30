@@ -111,6 +111,9 @@ struct RoundtripTests {
         FixtureRow(name: "ui.error.json") { try assertRoundtrip(fixture: "ui.error.json", as: RPCNotification<UIErrorParams>.self) },
         FixtureRow(name: "ui.usage.json") { try assertRoundtrip(fixture: "ui.usage.json", as: RPCNotification<UIUsageParams>.self) },
         FixtureRow(name: "ui.todo.json") { try assertRoundtrip(fixture: "ui.todo.json", as: RPCNotification<UITodoParams>.self) },
+        FixtureRow(name: "ui.compact.started.json") { try assertRoundtrip(fixture: "ui.compact.started.json", as: RPCNotification<UICompactParams>.self) },
+        FixtureRow(name: "ui.compact.done.json") { try assertRoundtrip(fixture: "ui.compact.done.json", as: RPCNotification<UICompactParams>.self) },
+        FixtureRow(name: "ui.compact.failed.json") { try assertRoundtrip(fixture: "ui.compact.failed.json", as: RPCNotification<UICompactParams>.self) },
 
         // provider.*
         FixtureRow(name: "provider.status.json") { try assertRoundtrip(fixture: "provider.status.json", as: RPCRequest<ProviderStatusParams>.self) },

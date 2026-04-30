@@ -41,6 +41,60 @@ struct AgentConversationView: View {
         viewModel.isAgentLoopActive
     }
 
+    /// One renderable row in the history feed. Turns and compact-event
+    /// dividers share the list so SwiftUI's identity-based diffing
+    /// continues to drive insert / removal transitions for both.
+    private enum HistoryItem: Identifiable {
+        case turn(ConversationTurn)
+        case compact(CompactEvent)
+
+        var id: String {
+            switch self {
+            case .turn(let t): return "turn:\(t.id)"
+            case .compact(let e): return "compact:\(e.id)"
+            }
+        }
+    }
+
+    /// Interleave `agentService.turns` with `agentService.compactEvents`.
+    /// Placement uses the event's `afterTurnId` — render the divider
+    /// IMMEDIATELY AFTER the turn it references — see `CompactEvent`
+    /// for the rationale (a divider anchored "after" pins it to the
+    /// historical position even after subsequent turns are submitted).
+    /// `afterTurnId == nil` puts the divider at the very top; an
+    /// `afterTurnId` that no longer matches any current turn (race with
+    /// `agent.reset`) is treated the same as nil — it lands at the top
+    /// so it isn't silently lost.
+    private var historyItems: [HistoryItem] {
+        let turns = agentService.turns
+        let events = agentService.compactEvents
+        guard !events.isEmpty else { return turns.map { .turn($0) } }
+
+        var afterByTurn: [String: [CompactEvent]] = [:]
+        var topEvents: [CompactEvent] = []
+        let knownIds = Set(turns.map(\.id))
+        for ev in events {
+            if let anchor = ev.afterTurnId, knownIds.contains(anchor) {
+                afterByTurn[anchor, default: []].append(ev)
+            } else {
+                topEvents.append(ev)
+            }
+        }
+
+        var out: [HistoryItem] = []
+        out.reserveCapacity(turns.count + events.count)
+        for ev in topEvents {
+            out.append(.compact(ev))
+        }
+        for turn in turns {
+            out.append(.turn(turn))
+            if let evs = afterByTurn[turn.id] {
+                for ev in evs { out.append(.compact(ev)) }
+            }
+        }
+        return out
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if hasSession {
@@ -141,18 +195,27 @@ struct AgentConversationView: View {
                 // only its own 1pt to `historyContentHeight`.
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 20) {
-                        ForEach(agentService.turns) { turn in
-                            turnRow(turn)
-                                .id(turn.id)
-                                .transition(.asymmetric(
-                                    insertion: .opacity,
-                                    removal: .identity
-                                ))
+                        ForEach(historyItems) { item in
+                            switch item {
+                            case .turn(let turn):
+                                turnRow(turn)
+                                    .id(item.id)
+                                    .transition(.asymmetric(
+                                        insertion: .opacity,
+                                        removal: .identity
+                                    ))
+                            case .compact(let event):
+                                CompactBlockView(event: event)
+                                    .id(item.id)
+                                    .transition(.opacity)
+                            }
                         }
                     }
-                    // Keyed on `count` so streaming tokens inside an
-                    // existing turn don't trigger the insert transition.
-                    .animation(reduceMotion ? nil : .smooth(duration: 0.32), value: agentService.turns.count)
+                    // Keyed on the combined item count so a new turn OR a
+                    // compact-event start triggers the insert transition,
+                    // while streaming tokens inside an existing turn do
+                    // not.
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.32), value: historyItems.count)
 
                     Color.clear
                         .frame(height: 1)
@@ -181,7 +244,7 @@ struct AgentConversationView: View {
                 }
             )
             .onAppear {
-                lastObservedTurnCount = agentService.turns.count
+                lastObservedTurnCount = historyItems.count
                 guard let lastID = agentService.turns.last?.id else { return }
                 followBottom = true
                 Task { @MainActor in
@@ -213,7 +276,9 @@ struct AgentConversationView: View {
         let rounded = rawHeight.rounded()
         guard viewModel.historyContentHeight != rounded else { return }
         let didGrow = rounded > viewModel.historyContentHeight
-        let countNow = agentService.turns.count
+        // Treat compact dividers as "rows" too so opening a compact
+        // marker auto-snaps the viewport like a turn insertion would.
+        let countNow = historyItems.count
         let countGrew = countNow > lastObservedTurnCount
         lastObservedTurnCount = countNow
         let availableViewport = viewModel.notchOpenedMaxHeight

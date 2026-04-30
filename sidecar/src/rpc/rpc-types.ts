@@ -113,6 +113,7 @@ export const RPCMethod = {
   agentSubmit: "agent.submit",
   agentCancel: "agent.cancel",
   agentReset: "agent.reset",
+  agentCompact: "agent.compact",
   conversationTurnStarted: "conversation.turnStarted",
   conversationReset: "conversation.reset",
   uiToken: "ui.token",
@@ -122,6 +123,7 @@ export const RPCMethod = {
   uiError: "ui.error",
   uiUsage: "ui.usage",
   uiTodo: "ui.todo",
+  uiCompact: "ui.compact",
   providerStatus: "provider.status",
   providerStartLogin: "provider.startLogin",
   providerCancelLogin: "provider.cancelLogin",
@@ -216,6 +218,29 @@ export interface AgentResetParams {
 
 export interface AgentResetResult {
   ok: boolean;
+}
+
+/// `agent.compact` is the manual context-compact entry. Layer 3 of the
+/// compact stack (vs. auto-path Layer 2 which fires from runTurn entry):
+/// the user explicitly asks "summarize my history right now". Bypasses
+/// the auto-compact breaker — manual is intent-driven, not automatic, so
+/// past auto failures don't gate it. Rejected when a turn is in flight
+/// (would race the running runTurn's own LLM stream); the user should
+/// cancel or wait.
+///
+/// Sidecar emits the same `ui.compact { started → done | failed }`
+/// lifecycle as the auto path. `turnId` on those frames is empty for
+/// the manual case — there is no "next turn" the marker should
+/// visually precede; the Shell renders it at the tail of history.
+export interface AgentCompactParams {
+  sessionId: string;
+}
+
+export interface AgentCompactResult {
+  ok: boolean;
+  /// Number of turns folded into the summary on success. Omitted when
+  /// the call short-circuits (no prior history to compact).
+  compactedTurnCount?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +475,36 @@ export interface TodoItemWire {
 export interface UITodoParams {
   sessionId: string;
   items: TodoItemWire[];
+}
+
+/// Lifecycle phases of a context-compact pass — the auto path
+/// (triggered at runTurn entry when remaining context falls below the
+/// threshold) and the future manual `/compact` RPC path both emit the
+/// same sequence: `started` → (`done` | `failed`).
+export type UICompactPhase = "started" | "done" | "failed";
+
+/// `ui.compact` is the Shell-facing signal that a compaction pass is
+/// running on this session. Phases:
+///   - `started`: emitted before the summarization LLM call begins. The
+///     Shell can show a spinner / "compacting…" badge.
+///   - `done`: the summary landed and the conversation has been
+///     rewritten. `compactedTurnCount` reports how many turns were folded
+///     into the summary so the UI can render an honest "N earlier turns
+///     summarized" marker. The Shell's mirror is now structurally out of
+///     sync with the sidecar's pruned `_turns`; future rounds will
+///     re-anchor naturally on the next `conversation.turnStarted`.
+///   - `failed`: the summarization call errored or returned no usable
+///     text. The conversation is unchanged and the loop continues with
+///     the original (oversized) history. `errorMessage` carries the
+///     reason for surfacing.
+export interface UICompactParams {
+  sessionId: string;
+  turnId: string;
+  phase: UICompactPhase;
+  /// Populated only on `done`. Number of turns folded into the summary.
+  compactedTurnCount?: number;
+  /// Populated only on `failed`.
+  errorMessage?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -60,6 +60,31 @@ export interface ConversationTurn {
 export class Conversation {
   private _turns: ConversationTurn[] = [];
   private _messages: Message[] = [];
+  /// Pre-history messages produced by a manual `compactAll`. When the user
+  /// folds every turn into a summary, `_turns` becomes empty but the
+  /// LLM still needs the boundary + summary in its prompt — those live
+  /// here. `llmMessages()` prepends this slot so the summary survives
+  /// across new turns until the next compact pass overwrites/clears it.
+  /// Auto-path `compact()` and `reset()` clear this slot.
+  private _preface: Message[] = [];
+  /// Most recent provider-reported `usage.totalTokens` value (= input +
+  /// output + cacheRead + cacheWrite). Updated by the agent loop after
+  /// every LLM round (via `recordTotalTokens`). The auto-compact
+  /// threshold check reads this — `contextWindow - lastTotalTokens` is
+  /// our running estimate of next-turn headroom. We deliberately use the
+  /// *total* and not just `usage.input` because:
+  ///   - `input` excludes cacheRead/cacheWrite — for any provider with
+  ///     prompt caching ON, `input` is just the uncached delta and
+  ///     drastically underestimates how full the prompt actually was.
+  ///   - The assistant `output` we just got was appended into the flat
+  ///     history; the next request's prompt will include those tokens
+  ///     too, so the right baseline for "how close to overflow next
+  ///     time" is the full round total, not the prompt-only slice.
+  /// Same value the Shell composer's context ring renders, by design —
+  /// one notion of "context fill" across the system.
+  /// A fresh session reads 0, which is intentional: the first turn never
+  /// triggers compact because there's nothing to compact yet.
+  private _lastTotalTokens = 0;
 
   get turns(): ReadonlyArray<ConversationTurn> {
     return this._turns;
@@ -69,6 +94,20 @@ export class Conversation {
   /// should go through `llmMessages()` so cancelled turns are filtered.
   get messages(): ReadonlyArray<Message> {
     return this._messages;
+  }
+
+  /// Provider-reported total-token count from the most recent LLM round
+  /// (input + output + cacheRead + cacheWrite), or 0 if no round has
+  /// completed yet. See `_lastTotalTokens` for why this is the right
+  /// figure for the auto-compact threshold check.
+  get lastTotalTokens(): number {
+    return this._lastTotalTokens;
+  }
+
+  /// Capture the total-token figure from a completed round's usage frame.
+  /// The loop fires once per round; later rounds simply overwrite.
+  recordTotalTokens(n: number): void {
+    if (Number.isFinite(n) && n >= 0) this._lastTotalTokens = n;
   }
 
   /// Register a new turn under the caller-supplied id and append its user
@@ -182,9 +221,127 @@ export class Conversation {
     return true;
   }
 
+  /// Compact-replace history. Called after the LLM has produced a summary
+  /// of all messages strictly preceding the current (last) turn.
+  ///
+  /// Result shape — `_messages = [boundary, summary, ...currentSlice]`:
+  ///   - `boundary` is a synthetic user-role message carrying compaction
+  ///     metadata (timestamp + count of compacted turns) so the model can
+  ///     recognize "history was just summarized" from context alone, even
+  ///     without external signals.
+  ///   - `summary` is a user-role message with the LLM-generated summary,
+  ///     prefixed `[Compressed]` to mark it as historical reference rather
+  ///     than a fresh user prompt.
+  ///   - `currentSlice` is the active turn's existing slice, untouched.
+  ///
+  /// `_turns` is pruned down to just the active turn with its range
+  /// re-anchored at index 2. Past turns are dropped entirely — both from
+  /// the LLM view and the wire view. Callers that care about UI
+  /// continuity should fire whatever wire notification their Shell
+  /// expects after this returns.
+  ///
+  /// Returns `false` if the active turn is unknown or not the last turn —
+  /// the single-active-turn invariant of the loop guarantees the latter
+  /// in production paths. Returns `false` and does nothing when there is
+  /// nothing to compact (the active turn IS the first turn — no prior
+  /// history exists yet).
+  compact(
+    activeTurnId: string,
+    summaryText: string,
+  ): { compactedTurnCount: number } | null {
+    const idx = this._turns.findIndex((t) => t.id === activeTurnId);
+    if (idx === -1) return null;
+    if (idx !== this._turns.length - 1) {
+      throw new Error(`compact requires ${activeTurnId} to be the last turn`);
+    }
+    if (idx === 0 && this._turns[0]!.messageStart === 0 && this._preface.length === 0) {
+      // Active turn is the first turn AND there is no prior preface to
+      // re-summarize. With a preface present (e.g. after a manual
+      // compactAll), the auto path may legitimately want to fold the
+      // preface plus the active turn into a fresh summary.
+      return null;
+    }
+
+    const activeTurn = this._turns[idx]!;
+    const currentSlice = this._messages.slice(activeTurn.messageStart, activeTurn.messageEnd);
+    const compactedTurnCount = idx; // turns 0..idx-1 get folded into the summary
+    const now = Date.now();
+
+    const boundary: Message = {
+      role: "user",
+      content:
+        `<compactionBoundary turns="${compactedTurnCount}" at="${new Date(now).toISOString()}" />`,
+      timestamp: now,
+    };
+    const summary: Message = {
+      role: "user",
+      content: `[Compressed]\n\n${summaryText}`,
+      timestamp: now,
+    };
+
+    this._messages = [boundary, summary, ...currentSlice];
+    // The new boundary + summary subsume any prior compactAll preface;
+    // the previous summary text was already part of `priorMessages` via
+    // `llmMessages()` and got folded into the new summary.
+    this._preface = [];
+    // The active turn now owns the boundary + summary as part of its
+    // slice. Conceptually those two messages are pre-history, not
+    // produced by this turn; the alternative (a synthetic
+    // "compaction" turn at index 0) requires extra wire shape and
+    // brings little value at v1. Folding into the active turn keeps
+    // every message inside some range, so `llmMessages()` continues
+    // to emit them. Wire-side, the turn's `prompt` / `reply` fields
+    // are unchanged — the compaction prefix is invisible to the UI.
+    activeTurn.messageStart = 0;
+    activeTurn.messageEnd = 2 + currentSlice.length;
+    this._turns = [activeTurn];
+    return { compactedTurnCount };
+  }
+
   reset(): void {
     this._turns = [];
     this._messages = [];
+    this._preface = [];
+    this._lastTotalTokens = 0;
+  }
+
+  /// True iff there is any LLM-visible content to summarize: at least
+  /// one non-cancelled turn, or a non-empty preface from a prior
+  /// compactAll pass. Used by both auto and manual entry points to
+  /// gate "no prior history" early-out vs. an LLM call that would
+  /// throw on empty input.
+  hasContentToCompact(): boolean {
+    if (this._preface.length > 0) return true;
+    return this._turns.some((t) => t.status !== "cancelled");
+  }
+
+  /// Manual-path counterpart to `compact()`. Folds EVERY turn (and any
+  /// prior preface) into a single summary, leaving `_turns` empty and
+  /// `_preface = [boundary, summary]`. The next `agent.submit` will
+  /// append a fresh turn at `messageStart = 0`; `llmMessages()` keeps
+  /// emitting the summary as pre-history until the next compact pass
+  /// overwrites it.
+  ///
+  /// Returns the count of turns folded (0 if the conversation was
+  /// already in a "preface only" state — a no-op compact-of-compact).
+  compactAll(summaryText: string): { compactedTurnCount: number } {
+    const compactedTurnCount = this._turns.length;
+    const now = Date.now();
+    const boundary: Message = {
+      role: "user",
+      content:
+        `<compactionBoundary turns="${compactedTurnCount}" at="${new Date(now).toISOString()}" />`,
+      timestamp: now,
+    };
+    const summary: Message = {
+      role: "user",
+      content: `[Compressed]\n\n${summaryText}`,
+      timestamp: now,
+    };
+    this._preface = [boundary, summary];
+    this._messages = [];
+    this._turns = [];
+    return { compactedTurnCount };
   }
 
   /// LLM-facing message list. Drops `cancelled` turns (user-abandoned
@@ -193,7 +350,7 @@ export class Conversation {
   /// the loop is responsible for keeping each preserved slice replayable
   /// (no orphan `tool_use`).
   llmMessages(): Message[] {
-    const out: Message[] = [];
+    const out: Message[] = [...this._preface];
     for (const t of this._turns) {
       if (t.status === "cancelled") continue;
       for (let i = t.messageStart; i < t.messageEnd; i++) {

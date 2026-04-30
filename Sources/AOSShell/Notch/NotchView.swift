@@ -145,7 +145,7 @@ struct NotchView: View {
         .animation(reduceMotion ? nil : .notchChrome,
                    value: trayHeight)
         .animation(reduceMotion ? nil : .notchChrome,
-                   value: viewModel.trayExpanded)
+                   value: viewModel.effectiveTrayExpanded)
     }
 
     /// Tray drawer height. Zero outside the opened state; otherwise

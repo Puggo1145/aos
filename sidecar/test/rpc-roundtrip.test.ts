@@ -46,6 +46,7 @@ import {
   type DevContextGetParams,
   type DevContextChangedParams,
   type UITodoParams,
+  type UICompactParams,
   type SessionCreateParams,
   type SessionListParams,
   type SessionActivateParams,
@@ -295,6 +296,34 @@ test("ui.todo fixture roundtrips byte-equal", () => {
     expect(typeof item.text).toBe("string");
     expect(["pending", "in_progress", "completed"]).toContain(item.status);
   }
+});
+
+test("ui.compact.started fixture roundtrips byte-equal", () => {
+  assertRoundtrip("ui.compact.started.json");
+  const { parsed } = loadFixture("ui.compact.started.json");
+  const note = parsed as RPCNotification<UICompactParams>;
+  expect(note.method).toBe(RPCMethod.uiCompact);
+  expect(note.params.phase).toBe("started");
+  expect(note.params.compactedTurnCount).toBeUndefined();
+  expect(note.params.errorMessage).toBeUndefined();
+});
+
+test("ui.compact.done fixture roundtrips byte-equal", () => {
+  assertRoundtrip("ui.compact.done.json");
+  const { parsed } = loadFixture("ui.compact.done.json");
+  const note = parsed as RPCNotification<UICompactParams>;
+  expect(note.method).toBe(RPCMethod.uiCompact);
+  expect(note.params.phase).toBe("done");
+  expect(typeof note.params.compactedTurnCount).toBe("number");
+});
+
+test("ui.compact.failed fixture roundtrips byte-equal", () => {
+  assertRoundtrip("ui.compact.failed.json");
+  const { parsed } = loadFixture("ui.compact.failed.json");
+  const note = parsed as RPCNotification<UICompactParams>;
+  expect(note.method).toBe(RPCMethod.uiCompact);
+  expect(note.params.phase).toBe("failed");
+  expect(typeof note.params.errorMessage).toBe("string");
 });
 
 test("provider.status fixture roundtrips byte-equal", () => {

@@ -427,6 +427,43 @@ public struct UITodoParams: Codable, Sendable, Equatable {
     }
 }
 
+/// Lifecycle phase of a context-compact pass. The auto path (sidecar
+/// runTurn entry) and the future manual `/compact` RPC path both emit
+/// the same `started` → (`done` | `failed`) sequence. See
+/// `UICompactParams` in `sidecar/src/rpc/rpc-types.ts`.
+public enum UICompactPhase: String, Codable, Sendable, Equatable {
+    case started
+    case done
+    case failed
+}
+
+/// `ui.compact` is the Shell-facing signal that a compaction pass is
+/// running on this session. The Shell can use it to render a
+/// "compacting…" affordance while `started`, drop the indicator on
+/// `done` (and optionally show the folded turn count), or surface
+/// `errorMessage` on `failed`.
+public struct UICompactParams: Codable, Sendable, Equatable {
+    public let sessionId: String
+    public let turnId: String
+    public let phase: UICompactPhase
+    public let compactedTurnCount: Int?
+    public let errorMessage: String?
+
+    public init(
+        sessionId: String,
+        turnId: String,
+        phase: UICompactPhase,
+        compactedTurnCount: Int? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.sessionId = sessionId
+        self.turnId = turnId
+        self.phase = phase
+        self.compactedTurnCount = compactedTurnCount
+        self.errorMessage = errorMessage
+    }
+}
+
 /// Token-usage snapshot emitted once per LLM round. Drives the live composer's
 /// context-usage ring. See `UIUsageParams` in `sidecar/src/rpc/rpc-types.ts`
 /// for the full contract. The headline "used context" is

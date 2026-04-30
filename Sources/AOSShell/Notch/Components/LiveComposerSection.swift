@@ -14,6 +14,7 @@ struct LiveComposerSection: View {
 
     var body: some View {
         ComposerCard(
+            viewModel: viewModel,
             senseStore: senseStore,
             agentService: agentService,
             configService: viewModel.configService,

@@ -696,6 +696,13 @@ public final class RPCClient: @unchecked Sendable {
         case RPCMethod.rpcPing: return 1
         case RPCMethod.agentSubmit, RPCMethod.agentCancel: return 1
         case RPCMethod.rpcHello: return 5
+        // Manual compact issues an LLM summarization round inline before
+        // returning. Long contexts on slow providers can run well past
+        // the 5s default; allow a generous ceiling to match the auto
+        // path (which has no per-call deadline since it lives inside
+        // runTurn). 120s matches how long users typically tolerate a
+        // foreground "compacting" spinner before reaching for cancel.
+        case RPCMethod.agentCompact: return 120
         default: return 5
         }
     }

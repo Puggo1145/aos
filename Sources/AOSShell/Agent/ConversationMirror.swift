@@ -37,6 +37,14 @@ public final class ConversationMirror {
     /// the sidecar sends after `agent.reset`.
     public var todos: [TodoItemWire] = []
 
+    /// Mirror of `ui.compact` lifecycle frames. Each event describes one
+    /// compact pass — the auto path (anchored to a brand-new turn the user
+    /// just submitted) or a manual `/compact` (anchored to the tail of
+    /// history). Stored as an ordered list so multiple compacts on the same
+    /// session each leave their own marker. Cleared on `conversation.reset`.
+    /// See `CompactEvent` for placement / status semantics.
+    public var compactEvents: [CompactEvent] = []
+
     private var doneRevertTask: Task<Void, Never>?
     private var errorRevertTask: Task<Void, Never>?
     /// Debounce for `.waiting` transitions. The sidecar emits
@@ -85,8 +93,88 @@ public final class ConversationMirror {
         lastErrorMessage = nil
         latestUsage = nil
         todos = []
+        compactEvents = []
         cancelReverts()
         cancelWaitingDebounce()
+    }
+
+    /// Project a `ui.compact` frame onto `compactEvents`. Lifecycle:
+    ///   - `started` opens a new event keyed by the wire `turnId` (empty
+    ///     string for manual). Phase = `.running`. The history view picks
+    ///     this up and renders a divider block with shimmer.
+    ///   - `done` flips the matching open event to `.done` (with the
+    ///     compactedTurnCount) so the marker stops shimmering and remains
+    ///     in history as a "summarized here" milestone.
+    ///   - `failed` removes the event (no failed-state marker — the user
+    ///     should see their conversation continue, not a stuck error
+    ///     divider). The submit-error banner / error revert handled
+    ///     elsewhere is sufficient for surfacing the failure cause.
+    public func applyCompact(_ p: UICompactParams) {
+        switch p.phase {
+        case .started:
+            // Resolve `afterTurnId` from the mirror's current turn list.
+            // See `CompactEvent` for the placement rationale.
+            //
+            //   - Auto path: the wire `turnId` names the just-submitted
+            //     turn that triggered compact. That turn is already in
+            //     the mirror (sidecar emits `conversation.turnStarted`
+            //     synchronously inside the agent.submit handler before
+            //     the detached runTurn task fires this notification).
+            //     Anchor the divider to the turn IMMEDIATELY BEFORE it
+            //     so the divider visually splits "old history" from
+            //     "the new turn the user just submitted".
+            //   - Manual path: the wire `turnId` is empty. The compact
+            //     fires from idle; anchor the divider to the latest
+            //     existing turn so subsequent submissions appear below.
+            let trigger = turns.firstIndex(where: { $0.id == p.turnId })
+            let afterTurnId: String?
+            if let trigger {
+                // Auto path: previous turn (or nil if compact ran with
+                // nothing earlier — sidecar disallows this, but we
+                // tolerate the edge for safety).
+                afterTurnId = trigger > 0 ? turns[trigger - 1].id : nil
+            } else {
+                // Manual path or unknown turnId: latest turn.
+                afterTurnId = turns.last?.id
+            }
+            // We key the lifecycle pairing on the SAME wire `turnId`
+            // the started frame carried so done/failed can find this
+            // event later. Stash it on a temporary tracking-only field
+            // via the event id encoding — id contains the wire turnId
+            // so subsequent frames can match without reading anything
+            // else. Format is stable: lifecycle code only re-derives
+            // `wireTurnId` from `id`; downstream views ignore the id
+            // shape entirely (they identify the row via SwiftUI diff).
+            let id = "compact:\(p.turnId):\(UUID().uuidString)"
+            let event = CompactEvent(
+                id: id,
+                afterTurnId: afterTurnId,
+                status: .running,
+                compactedTurnCount: nil
+            )
+            compactEvents.append(event)
+        case .done:
+            if let idx = lastRunningEventIndex(matchingWireTurnId: p.turnId) {
+                compactEvents[idx].status = .done
+                compactEvents[idx].compactedTurnCount = p.compactedTurnCount
+            }
+        case .failed:
+            if let idx = lastRunningEventIndex(matchingWireTurnId: p.turnId) {
+                compactEvents.remove(at: idx)
+            }
+        }
+    }
+
+    /// Match the most recent running event whose stored id contains the
+    /// given wire `turnId`. Started/done/failed frames carry the same
+    /// wire turnId (auto: the triggering turn; manual: empty), so this
+    /// pair-up works for both paths and tolerates concurrent compacts
+    /// on different sessions (each mirror only sees its own events).
+    private func lastRunningEventIndex(matchingWireTurnId wireTurnId: String) -> Int? {
+        let needle = "compact:\(wireTurnId):"
+        return compactEvents.lastIndex(where: {
+            $0.status == .running && $0.id.hasPrefix(needle)
+        })
     }
 
     /// Whole-list mirror update from `ui.todo`. The sidecar emits this on

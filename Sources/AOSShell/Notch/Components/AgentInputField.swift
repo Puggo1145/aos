@@ -30,6 +30,7 @@ import AOSRPCSchema
 //     fresh window snapshot.
 
 struct ComposerCard: View {
+    let viewModel: NotchViewModel
     let senseStore: SenseStore
     let agentService: AgentService
     let configService: ConfigService
@@ -42,13 +43,25 @@ struct ComposerCard: View {
     @Binding var inputFocused: Bool
 
     @State private var deselectedBehaviorKeys: Set<String> = []
+    /// Slash-command palette state lives on `NotchViewModel` because the
+    /// notch's tray drawer (rendered above the composer in the view
+    /// tree) consumes the same state to project palette matches into
+    /// drawer rows. Pulling it here as a computed pass-through keeps
+    /// the composer's local code reading like a `@State` while the
+    /// authoritative source is the viewmodel.
+    private var palette: CommandPaletteState { viewModel.commandPalette }
 
     /// Disable the send button when the typed prompt is effectively empty.
     /// Chips alone don't count — the LLM contract is "the user actually
     /// said something", and a bag of pastes with no question is a bug
     /// shape, not a turn.
+    ///
+    /// While the slash-command palette is active, the send button is
+    /// also disabled — the trailing affordance becomes meaningless when
+    /// Enter is reserved for command execution, and submitting a
+    /// literal `/compact` as a prompt is never desirable.
     private var canSubmit: Bool {
-        !inputModel.isTextEmpty && !isAgentBusy
+        !inputModel.isTextEmpty && !isAgentBusy && !palette.isActive
     }
 
     /// The agent is mid-turn — either streaming tokens (`working`) or
@@ -81,6 +94,21 @@ struct ComposerCard: View {
             // mind. Reset the field so a turn aimed at the new app can't
             // accidentally inherit the previous app's pastes.
             inputModel.clear()
+            palette.deactivate()
+        }
+        .onChange(of: inputModel.displayText) { _, _ in
+            viewModel.refreshCommandPalette()
+        }
+        .onChange(of: inputModel.isStorageEmpty) { _, _ in
+            viewModel.refreshCommandPalette()
+        }
+        .onChange(of: inputModel.attachmentCount) { _, _ in
+            // Pasting a chip while `/compact` is showing must
+            // immediately fail the palette gate — the gate forbids
+            // attachments. `displayText` doesn't change on a chip
+            // insert, so the regular text-change observer wouldn't
+            // catch this.
+            viewModel.refreshCommandPalette()
         }
     }
 
@@ -102,7 +130,11 @@ struct ComposerCard: View {
                 font: NSFont.systemFont(ofSize: 15),
                 textColor: .white,
                 onSubmit: { submit() },
-                onFocusChange: { inputFocused = $0 }
+                onFocusChange: { inputFocused = $0 },
+                paletteIsActive: { palette.isActive },
+                paletteNavigate: { palette.navigate($0) },
+                paletteEnter: { viewModel.executeHighlightedCommand() },
+                paletteEscape: { palette.deactivate() }
             )
         }
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)

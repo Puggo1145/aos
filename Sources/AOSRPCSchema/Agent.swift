@@ -69,6 +69,41 @@ public struct AgentResetResult: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - agent.compact
+//
+// Manual context-compact entry. Layer 3 of the compact stack — the user
+// explicitly asks the sidecar to summarize prior history right now (vs.
+// the auto path that fires from `runTurn` entry once the running token
+// estimate gets close to the model's context window).
+//
+// The handler bypasses the auto-compact circuit breaker (manual intent
+// overrides past auto failures) and rejects when a turn is in flight on
+// the session. Both paths emit the same `ui.compact { started → done |
+// failed }` lifecycle; on the manual path the wire `turnId` on those
+// frames is the empty string — there is no "next turn" the marker
+// should visually precede, so Shell renders the marker at the tail of
+// history.
+
+public struct AgentCompactParams: Codable, Sendable, Equatable {
+    public let sessionId: String
+
+    public init(sessionId: String) {
+        self.sessionId = sessionId
+    }
+}
+
+public struct AgentCompactResult: Codable, Sendable, Equatable {
+    public let ok: Bool
+    /// Turns folded into the summary on success. Omitted when there was
+    /// no prior history to compact.
+    public let compactedTurnCount: Int?
+
+    public init(ok: Bool, compactedTurnCount: Int? = nil) {
+        self.ok = ok
+        self.compactedTurnCount = compactedTurnCount
+    }
+}
+
 // MARK: - conversation.* (Sidecar → Shell notifications)
 //
 // The sidecar owns the canonical conversation state (turns array + the LLM

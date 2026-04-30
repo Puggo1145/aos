@@ -28,69 +28,109 @@ struct SystemTrayView: View {
 
     private var items: [TrayItem] { viewModel.trayItems }
     private var hasMultiple: Bool { items.count > 1 }
+    /// Slash-command palette mode replaces the regular notice surface:
+    /// every row is a peer command suggestion, the chevron disappears
+    /// (no first-row + collapse semantics — every match is meant to be
+    /// visible), and the selected row paints as the keyboard cursor.
+    private var inPaletteMode: Bool { viewModel.isCommandPaletteMode }
 
     @ViewBuilder
     var body: some View {
         if items.isEmpty {
             EmptyView()
+        } else if inPaletteMode {
+            paletteBody
         } else {
-            // ScrollView so the very rare case of >9 items stays usable
-            // when the drawer hits its 240pt ceiling. Disabled when the
-            // drawer is collapsed so accidental scrolls don't reveal
-            // hidden rows past the clipped frame.
-            ScrollView(.vertical, showsIndicators: false) {
-                // Two-block layout (NOT one VStack with spacing). The first
-                // row + its own vertical padding(10) defines the collapsed
-                // height exactly, so when the parent clips to
-                // `notchTrayCollapsedHeight` the additional rows start
-                // immediately *at* the clip line — no spillover, no partial
-                // second row peeking through. A single VStack with
-                // spacing(6) would push the second row's first ~4pt into
-                // the clip window.
-                VStack(alignment: .leading, spacing: 0) {
-                    // Pin first-block to EXACTLY the collapsed height. The
-                    // row's intrinsic height varies a few points across
-                    // layout passes (SF Symbol metrics, font baseline
-                    // settling, first-frame vs measured), which used to
-                    // cause an intermittent 1–4pt sliver of the second
-                    // row to bleed through the clip line on first open.
-                    HStack(spacing: 8) {
-                        itemRow(items[0])
-                        if hasMultiple { chevronButton }
+            noticesBody
+        }
+    }
+
+    // MARK: - Notices layout (default)
+
+    private var noticesBody: some View {
+        // ScrollView so the very rare case of >9 items stays usable
+        // when the drawer hits its 240pt ceiling. Disabled when the
+        // drawer is collapsed so accidental scrolls don't reveal
+        // hidden rows past the clipped frame.
+        ScrollView(.vertical, showsIndicators: false) {
+            // Two-block layout (NOT one VStack with spacing). The first
+            // row + its own vertical padding(10) defines the collapsed
+            // height exactly, so when the parent clips to
+            // `notchTrayCollapsedHeight` the additional rows start
+            // immediately *at* the clip line — no spillover, no partial
+            // second row peeking through. A single VStack with
+            // spacing(6) would push the second row's first ~4pt into
+            // the clip window.
+            VStack(alignment: .leading, spacing: 0) {
+                // Pin first-block to EXACTLY the collapsed height. The
+                // row's intrinsic height varies a few points across
+                // layout passes (SF Symbol metrics, font baseline
+                // settling, first-frame vs measured), which used to
+                // cause an intermittent 1–4pt sliver of the second
+                // row to bleed through the clip line on first open.
+                HStack(spacing: 8) {
+                    itemRow(items[0])
+                    if hasMultiple { chevronButton }
+                }
+                .padding(.horizontal, 16)
+                // Slight bottom padding inside the centered frame nudges
+                // the row up by ~half its size, compensating for the
+                // perceived extension of the drawer band into the main
+                // notch's rounded-corner region above. Without this the
+                // row reads as bottom-heavy because eye-centering uses
+                // the full visual band including the curves, not just
+                // the flat region.
+                .padding(.bottom, 4)
+                .frame(height: viewModel.notchTrayCollapsedHeight)
+
+                if hasMultiple {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(items.dropFirst()) { itemRow($0) }
                     }
                     .padding(.horizontal, 16)
-                    // Slight bottom padding inside the centered frame nudges
-                    // the row up by ~half its size, compensating for the
-                    // perceived extension of the drawer band into the main
-                    // notch's rounded-corner region above. Without this the
-                    // row reads as bottom-heavy because eye-centering uses
-                    // the full visual band including the curves, not just
-                    // the flat region.
-                    .padding(.bottom, 4)
-                    .frame(height: viewModel.notchTrayCollapsedHeight)
-
-                    if hasMultiple {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(items.dropFirst()) { itemRow($0) }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 10)
-                    }
+                    .padding(.bottom, 10)
                 }
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: TrayHeightKey.self,
-                            value: geo.size.height
-                        )
-                    }
-                )
             }
-            .scrollDisabled(!viewModel.trayExpanded)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onPreferenceChange(TrayHeightKey.self) { h in
-                viewModel.trayContentHeight = h
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: TrayHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
+        }
+        .scrollDisabled(!viewModel.effectiveTrayExpanded)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onPreferenceChange(TrayHeightKey.self) { h in
+            viewModel.trayContentHeight = h
+        }
+    }
+
+    // MARK: - Palette layout
+
+    /// Slash-command palette: peer rows, no chevron, no collapsed
+    /// "first row only" handling. Every match renders, the highlighted
+    /// row paints as the keyboard cursor target.
+    private var paletteBody: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(items) { itemRow($0) }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: TrayHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onPreferenceChange(TrayHeightKey.self) { h in
+            viewModel.trayContentHeight = h
         }
     }
 
@@ -143,14 +183,23 @@ struct SystemTrayView: View {
     /// message), `.badge` is monospaced (digits don't jitter as the badge
     /// updates between renders).
     private func rowContent(_ item: TrayItem) -> some View {
-        HStack(spacing: 8) {
+        // Foreground rules:
+        //   - Notice rows (default surface): keep the long-standing
+        //     0.85 alpha so existing system notices read unchanged.
+        //   - Palette rows: highlighted = solid white (the keyboard
+        //     cursor); the others fade to 0.45 gray. Selection reads
+        //     purely through text contrast — no background fill.
+        let messageColor: Color = inPaletteMode
+            ? (item.highlighted ? .white : .white.opacity(0.45))
+            : .white.opacity(0.85)
+        return HStack(spacing: 8) {
             Image(systemName: item.icon)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(item.tint)
                 .frame(width: 14, alignment: .center)
             Text(item.message)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(messageColor)
                 .lineLimit(1)
             Spacer(minLength: 6)
             if let trailing = item.trailing {

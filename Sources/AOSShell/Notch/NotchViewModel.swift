@@ -134,13 +134,40 @@ public final class NotchViewModel {
     /// is the display order — built-in system notices (permission /
     /// provider / config) are registered first in `init`, so they always
     /// render above later additions like the agent's todo-progress row.
+    ///
+    /// Slash-command palette short-circuits this composition: while the
+    /// palette is active the drawer is the command palette's surface,
+    /// not a notice list. Mixing system notices with command suggestions
+    /// would dilute both — the user is mid-keystroke selecting a command,
+    /// not triaging notices. Notices flip back the instant the palette
+    /// gate fails (e.g. user types space, escapes, or executes).
     public var trayItems: [TrayItem] {
+        if commandPalette.isActive {
+            return commandPaletteItems()
+        }
         var out: [TrayItem] = []
         for source in traySources {
             out.append(contentsOf: source())
         }
         if dismissedItemIds.isEmpty { return out }
         return out.filter { !dismissedItemIds.contains($0.id) }
+    }
+
+    /// Effective expansion state used by the tray view. Forced open
+    /// while the slash-command palette is active so every match is
+    /// visible without a chevron click — the user expects to see the
+    /// suggestion list as soon as `/` is typed. Outside palette mode
+    /// this is the user's stored preference.
+    public var effectiveTrayExpanded: Bool {
+        commandPalette.isActive || trayExpanded
+    }
+
+    /// True iff the drawer is currently rendering slash-command rows
+    /// (vs. ordinary notices). Used by SystemTrayView to drop the
+    /// dismiss `×` and the collapsed/expanded chevron — neither has
+    /// meaning during command selection.
+    public var isCommandPaletteMode: Bool {
+        commandPalette.isActive
     }
 
     public var hasTrayItems: Bool { !trayItems.isEmpty }
@@ -170,7 +197,7 @@ public final class NotchViewModel {
         Self.makeTraySize(
             width: notchOpenedWidth,
             itemCount: trayItems.count,
-            expanded: trayExpanded,
+            expanded: effectiveTrayExpanded,
             measuredContentHeight: trayContentHeight,
             collapsedHeight: notchTrayCollapsedHeight,
             maxHeight: notchTrayMaxHeight
@@ -301,6 +328,13 @@ public final class NotchViewModel {
     /// would otherwise reset every `@State` in the composer.
     let composerInputModel: ChipInputModel = ChipInputModel()
 
+    /// Slash-command palette state. Owned at the viewmodel level so the
+    /// notch tray (rendered above the composer in the view tree) can
+    /// project palette matches into its drawer rows. The composer
+    /// updates this on every text change; the tray reads it via the
+    /// registered tray source below.
+    public let commandPalette = CommandPaletteState()
+
     // Combine cancellables for the event-bridge subscriptions registered in
     // NotchViewModel+Events.swift.
     var cancellables: Set<AnyCancellable> = []
@@ -390,6 +424,83 @@ public final class NotchViewModel {
             ))
         }
         return out
+    }
+
+    /// Slash-command palette rows. Built directly here (not via a
+    /// registered tray source) because (a) the tray short-circuits to
+    /// these whenever the palette is active, so a registered source
+    /// would never be reached on the suppressed path, and (b) we can
+    /// read `commandPalette` synchronously without weak-self
+    /// indirection.
+    ///
+    /// Cap at the visible row budget (5) so the drawer never grows past
+    /// what `notchTrayMaxHeight` (240pt) can fit comfortably; the
+    /// palette already prefix-matches against the registry, so dropping
+    /// the tail rarely hides anything actionable. The selected row is
+    /// flagged `highlighted` so SystemTrayView can paint it as the
+    /// keyboard cursor target.
+    private func commandPaletteItems() -> [TrayItem] {
+        let matches = commandPalette.matches.prefix(5)
+        if matches.isEmpty {
+            // Empty match still produces a single inert row so the
+            // drawer doesn't blink in/out as the user refines the
+            // prefix toward a non-match.
+            return [TrayItem(
+                id: BuiltinTrayItemID.commandPrefix + "_empty",
+                icon: "questionmark.circle",
+                tint: .white.opacity(0.5),
+                message: "No matching commands",
+                trailing: nil,
+                dismissable: false,
+                onTap: nil,
+                highlighted: false
+            )]
+        }
+        let selectedId = commandPalette.selectedCommand?.id
+        return matches.map { cmd in
+            TrayItem(
+                id: BuiltinTrayItemID.commandPrefix + cmd.id,
+                icon: "slash.circle",
+                tint: .white.opacity(0.85),
+                message: "/\(cmd.name) — \(cmd.description)",
+                trailing: nil,
+                dismissable: false,
+                onTap: { [weak self] in
+                    // Click executes the command and clears the input
+                    // so the composer is ready for the next prompt.
+                    guard let self else { return }
+                    self.composerInputModel.clear()
+                    self.commandPalette.deactivate()
+                    Task { await cmd.execute() }
+                },
+                highlighted: cmd.id == selectedId
+            )
+        }
+    }
+
+    /// Recompute the slash-command palette state from the current chip
+    /// input contents. Called by the composer on every relevant input
+    /// change. Lives on the viewmodel (not the composer) so the palette
+    /// state — which the tray also reads — stays single-source.
+    public func refreshCommandPalette() {
+        commandPalette.update(
+            text: composerInputModel.displayText,
+            attachmentCount: composerInputModel.attachmentCount,
+            commands: SlashCommandRegistry.commands(agentService: agentService)
+        )
+    }
+
+    /// Execute the currently-highlighted command (the row Up/Down arrows
+    /// have parked on). Returns `true` when a command actually ran so the
+    /// caller can short-circuit the regular submit path. Returns `false`
+    /// when there is no match — the caller falls back to the usual
+    /// "Enter submits prompt" gate.
+    public func executeHighlightedCommand() -> Bool {
+        guard let cmd = commandPalette.selectedCommand else { return false }
+        composerInputModel.clear()
+        commandPalette.deactivate()
+        Task { await cmd.execute() }
+        return true
     }
 
     /// s03 TodoWrite live row. Surfaces only when the plan has an active
