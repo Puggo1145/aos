@@ -541,7 +541,14 @@ export async function runTurn(
     // Reset on any round whose final AssistantMessage carries a non-empty
     // text content block; incremented on each tool-bearing round. When it
     // exceeds MAX_CONSECUTIVE_TOOL_ROUNDS the turn bails as a runaway loop.
+    //
+    // Mirrored onto `session.silentToolRounds` so the silent-progress
+    // ambient provider can read it on the next round and decide whether
+    // to inject a "tell the user where you are" reminder. We reset the
+    // session field at turn entry so a previous turn's residual count
+    // never leaks into a fresh user prompt.
     let consecutiveSilentToolRounds = 0;
+    session.setSilentToolRounds(0);
     while (true) {
       const messages = convo.llmMessages();
 
@@ -775,15 +782,41 @@ export async function runTurn(
       } else {
         consecutiveSilentToolRounds++;
       }
+      session.setSilentToolRounds(consecutiveSilentToolRounds);
       if (consecutiveSilentToolRounds > MAX_CONSECUTIVE_TOOL_ROUNDS) {
         closeThinkingIfOpen();
         const overflowMsg = `tool-call budget exceeded (${MAX_CONSECUTIVE_TOOL_ROUNDS} consecutive tool rounds without assistant text)`;
-        // Drop the silent rounds + this round's orphan toolCall so a retry
-        // in this session doesn't drag the broken trace along.
-        convo.collapseToReminder(
-          turnId,
-          `<reminder>The previous attempt issued ${MAX_CONSECUTIVE_TOOL_ROUNDS} consecutive tool calls without producing any visible reply text and was stopped by the system. Try a different approach — narrate progress between tool calls or finish with a text response.</reminder>`,
-        );
+        // Preserve the slice. The hard cap fires after the assistant
+        // round just appended a tool-bearing message; if we returned now
+        // the next user prompt would carry orphan `tool_use` blocks with
+        // no matching `tool_result` and the provider would reject the
+        // request. Synthesize aborted tool_result messages instead — the
+        // tool calls executed during this turn (and the rounds that led
+        // up to the cap) stay in history, which is the user's expectation
+        // when they continue the conversation after seeing the limit hit.
+        const stopText = `Stopped by system: tool-call budget exceeded (${MAX_CONSECUTIVE_TOOL_ROUNDS} consecutive tool calls without assistant text). Tell the user where you got and ask before continuing.`;
+        for (const tc of toolCalls) {
+          const stopMsg: ToolResultMessage = {
+            role: "toolResult",
+            toolCallId: tc.id,
+            toolName: tc.name,
+            content: [{ type: "text", text: stopText }],
+            isError: true,
+            timestamp: Date.now(),
+          };
+          if (!convo.appendToolResult(turnId, stopMsg)) return;
+          if (callOutcomes.get(tc.id)?.kind === "ready") {
+            dispatcher.notify(RPCMethod.uiToolCall, {
+              sessionId,
+              turnId,
+              phase: "result",
+              toolCallId: tc.id,
+              toolName: tc.name,
+              isError: true,
+              outputText: stopText,
+            });
+          }
+        }
         if (convo.setError(turnId, RPCErrorCode.internalError, overflowMsg)) {
           dispatcher.notify(RPCMethod.uiError, {
             sessionId,

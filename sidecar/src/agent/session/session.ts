@@ -19,6 +19,14 @@ export class Session {
   /// tool mutates this; the agent loop subscribes and projects every
   /// update onto the wire as `ui.todo`.
   readonly todos: TodoManager;
+  /// Count of consecutive tool-call rounds in the in-flight (or most
+  /// recently completed) turn during which the assistant produced no
+  /// visible text. The agent loop is the sole writer; ambient providers
+  /// read it to decide whether to inject a "tell the user where you are"
+  /// reminder. Mirrors the loop's per-turn `consecutiveSilentToolRounds`
+  /// counter so the value stays accessible to ambient renderers, which
+  /// only get a `Session` handle.
+  private _silentToolRounds = 0;
   private _info: SessionInfo;
 
   constructor(info: SessionInfo) {
@@ -31,6 +39,14 @@ export class Session {
 
   get info(): SessionInfo {
     return this._info;
+  }
+
+  get silentToolRounds(): number {
+    return this._silentToolRounds;
+  }
+
+  setSilentToolRounds(n: number): void {
+    this._silentToolRounds = n < 0 ? 0 : n;
   }
 
   /// Replace title. Manager calls this once on first user prompt; subsequent

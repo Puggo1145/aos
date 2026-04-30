@@ -9,9 +9,10 @@
 // New contract:
 //   - errored turns stay in `llmMessages()` (only `cancelled` is filtered)
 //   - the agent loop owns the invariant that a preserved errored slice is
-//     replayable: orphan `tool_use` blocks are repaired inline at the
-//     dispatch site, and runaway tool-loop bailouts collapse the slice via
-//     `collapseToReminder` before marking error
+//     replayable: orphan `tool_use` blocks get synthesized aborted
+//     `tool_result` messages inline, including the runaway tool-loop
+//     bailout — the prior tool history is preserved so the user's next
+//     prompt continues from real context, not from a wiped slice
 //
 // These tests cover the Conversation-side guarantees in isolation; the loop
 // integration is exercised by `agent-tool-loop.test.ts`.
@@ -69,38 +70,3 @@ test("llmMessages still drops cancelled turns", () => {
   expect(c.llmMessages()).toEqual([]);
 });
 
-test("collapseToReminder replaces a runaway turn's slice with [user prompt, reminder]", () => {
-  // Runaway tool-loop bailout path: 25+ silent assistant rounds plus a
-  // pending orphan `tool_use` are dead weight on the next request. Collapsing
-  // the slice keeps the original prompt visible (the user can still see what
-  // they asked) and adds a reminder so the model knows why the previous
-  // attempt was cut.
-  const c = new Conversation();
-  c.startTurn({ id: "T1", prompt: "loop forever", citedContext: {} });
-  c.appendAssistant("T1", fakeAssistantText("noise round 1"));
-  c.appendAssistant("T1", fakeAssistantText("noise round 2"));
-
-  c.collapseToReminder("T1", "<reminder>previous attempt was cut</reminder>");
-
-  const msgs = c.llmMessages();
-  expect(msgs).toHaveLength(2);
-  expect(msgs[0].role).toBe("user");
-  expect(msgs[1].role).toBe("user");
-  expect(msgs[1].content).toContain("previous attempt was cut");
-});
-
-test("collapseToReminder rejects non-last turns to protect message-range alignment", () => {
-  // The collapse truncates `_messages` past the turn's user prompt; doing
-  // that for a turn that isn't the last would shift every later turn's
-  // [start, end) range out of alignment. The runaway-bailout caller is
-  // always operating on the in-flight turn, which is by invariant the last.
-  const c = new Conversation();
-  c.startTurn({ id: "T1", prompt: "first", citedContext: {} });
-  c.markDone("T1");
-  c.startTurn({ id: "T2", prompt: "second", citedContext: {} });
-  c.markDone("T2");
-
-  expect(() =>
-    c.collapseToReminder("T1", "should fail"),
-  ).toThrow(/last turn/);
-});

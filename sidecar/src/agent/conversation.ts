@@ -198,30 +198,7 @@ export class Conversation {
     return true;
   }
 
-  /// Collapse the turn's slice down to `[user prompt, reminder]`. Used by the
-  /// runaway tool-call bailout to drop dead silent rounds while keeping the
-  /// original prompt and a note for the model.
-  ///
-  /// Must be the last turn: truncating `_messages` would shift later turns'
-  /// ranges. Single-active-turn invariant guarantees this.
-  collapseToReminder(turnId: string, reminderText: string): boolean {
-    const t = this.find(turnId);
-    if (!t) return false;
-    if (t !== this._turns[this._turns.length - 1]) {
-      throw new Error(`collapseToReminder requires ${turnId} to be the last turn`);
-    }
-    // Keep only the user prompt at messageStart.
-    this._messages.length = t.messageStart + 1;
-    this._messages.push({
-      role: "user",
-      content: reminderText,
-      timestamp: Date.now(),
-    });
-    t.messageEnd = this._messages.length;
-    return true;
-  }
-
-  /// Compact-replace history. Called after the LLM has produced a summary
+/// Compact-replace history. Called after the LLM has produced a summary
   /// of all messages strictly preceding the current (last) turn.
   ///
   /// Result shape — `_messages = [boundary, summary, ...currentSlice]`:
