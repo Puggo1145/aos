@@ -45,6 +45,10 @@ enum ScreenshotToggleState: Equatable {
 }
 
 struct ContextChipsView: View {
+    private static let chipHeight: CGFloat = 28
+    private static let chipCornerRadius: CGFloat = 8
+    private static let rowVerticalPadding: CGFloat = 4
+
     let senseStore: SenseStore
     let policyStore: VisualCapturePolicyStore
     /// Derived screenshot-toggle state for the current (model, permission,
@@ -63,9 +67,9 @@ struct ContextChipsView: View {
                     behaviorChip(envelope: envelope)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, Self.rowVerticalPadding)
         }
-        .frame(height: 32)
+        .frame(height: Self.chipHeight + Self.rowVerticalPadding * 2)
         .onChange(of: senseStore.context.app?.bundleId) { _, _ in
             // App switch invalidates per-app behavior chip identities;
             // reset behavior selections so the user starts each app fresh.
@@ -98,8 +102,9 @@ struct ContextChipsView: View {
         .padding(.leading, 6)
         .padding(.trailing, 4)
         .padding(.vertical, 4)
+        .frame(height: Self.chipHeight)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: Self.chipCornerRadius, style: .continuous)
                 .fill(Color.white.opacity(0.08))
         )
     }
@@ -115,9 +120,9 @@ struct ContextChipsView: View {
             }
         } label: {
             Image(systemName: screenshotToggleIcon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(screenshotToggleOpacity))
-                .frame(width: 28, height: 28)
+                .frame(width: Self.chipHeight, height: Self.chipHeight)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.notchPressable)
@@ -187,12 +192,13 @@ struct ContextChipsView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
+            .frame(height: Self.chipHeight)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.chipCornerRadius, style: .continuous)
                     .fill(Color.white.opacity(selected ? 0.12 : 0.04))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.chipCornerRadius, style: .continuous)
                     .strokeBorder(
                         Color.white.opacity(selected ? 0 : 0.18),
                         lineWidth: 1
