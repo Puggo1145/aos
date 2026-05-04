@@ -345,6 +345,10 @@ struct ChipInputView: NSViewRepresentable {
 /// instead of pasted text. Public-internal so the SwiftUI representable
 /// can return the concrete type.
 final class _ChipTextView: NSTextView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     /// Report the natural text height so SwiftUI can size us via
     /// `.fixedSize(vertical:)`. Without this the NSTextView gleefully
     /// accepts any height the parent offers — and the parent VStack's

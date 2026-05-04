@@ -6,16 +6,20 @@ import AppKit
 // always-on-top, all-Spaces overlay window. Required attributes:
 //   - level above status bar so it sits over the menu bar
 //   - collectionBehavior covers full-screen apps + Spaces switching
-//   - canBecomeKey/Main = true so the prompt TextField receives keystrokes
+//   - non-activating panel semantics so mouse interaction doesn't deactivate
+//     the user's current foreground app
+//   - canBecomeKey = true so the prompt TextField receives keystrokes
 
-final class NotchWindow: NSWindow {
+final class NotchWindow: NSPanel {
     override init(
         contentRect: NSRect,
         styleMask style: NSWindow.StyleMask,
         backing: NSWindow.BackingStoreType,
         defer flag: Bool
     ) {
-        super.init(contentRect: contentRect, styleMask: style, backing: backing, defer: flag)
+        var panelStyle = style
+        panelStyle.insert(.nonactivatingPanel)
+        super.init(contentRect: contentRect, styleMask: panelStyle, backing: backing, defer: flag)
         configureForNotchOverlay()
     }
 
@@ -27,6 +31,9 @@ final class NotchWindow: NSWindow {
         isMovable = false
         hasShadow = false
         ignoresMouseEvents = false
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        becomesKeyOnlyIfNeeded = true
         level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 8)
         collectionBehavior = [
             .fullScreenAuxiliary,
@@ -44,7 +51,7 @@ final class NotchWindow: NSWindow {
     }
 
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeMain: Bool { false }
 
     // LSUIElement + borderless windows have no app-supplied Edit menu, so the
     // system never wires Cmd-X/C/V/A/Z to the first responder. Without this

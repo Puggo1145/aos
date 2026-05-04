@@ -674,7 +674,6 @@ public final class NotchViewModel {
     public func notchOpen(_ reason: OpenReason) {
         openReason = reason
         status = .opened
-        NSApp.activate(ignoringOtherApps: true)
         // Force a fresh AX read of the prior frontmost app so the user sees
         // their just-made selection / typed-input chip immediately. Live AX
         // notifications are unreliable in terminals (Ghostty), Electron, and
