@@ -3,20 +3,41 @@ import Foundation
 // MARK: - AppInfo
 //
 // Per `docs/designs/computer-use.md` §"模块结构" / `computerUse.listApps`.
-// Plain-data record of an operable on-screen app. The agent picks one
-// and then calls `listWindows({pid})` to drive any actions.
+// Plain-data record of an available macOS application. Apps that are already
+// running carry a pid; the agent can then call `listWindows({pid})` to drive
+// actions. Installed-but-not-running apps intentionally keep pid nil.
 
 public struct AppInfo: Sendable, Hashable {
-    public let pid: pid_t
+    public let pid: pid_t?
     public let bundleId: String?
     public let name: String
+    public let path: String?
+    public let running: Bool
     /// `true` when this app is the current `NSWorkspace.frontmostApplication`.
     public let active: Bool
 
-    public init(pid: pid_t, bundleId: String?, name: String, active: Bool) {
+    public var identity: String {
+        path ?? bundleId ?? pid.map { "pid:\($0)" } ?? "name:\(name)"
+    }
+
+    public init(
+        pid: pid_t?,
+        bundleId: String?,
+        name: String,
+        path: String?,
+        running: Bool,
+        active: Bool
+    ) {
         self.pid = pid
         self.bundleId = bundleId
         self.name = name
+        self.path = path
+        self.running = running
         self.active = active
     }
+}
+
+public enum AppListMode: String, Sendable, Equatable {
+    case running
+    case all
 }

@@ -23,15 +23,19 @@ import Foundation
 // MARK: - Shared records
 
 public struct ComputerUseAppInfo: Codable, Sendable, Equatable {
-    public let pid: Int32
+    public let pid: Int32?
     public let bundleId: String?
     public let name: String
+    public let path: String?
+    public let running: Bool
     public let active: Bool
 
-    public init(pid: Int32, bundleId: String?, name: String, active: Bool) {
+    public init(pid: Int32?, bundleId: String?, name: String, path: String?, running: Bool, active: Bool) {
         self.pid = pid
         self.bundleId = bundleId
         self.name = name
+        self.path = path
+        self.running = running
         self.active = active
     }
 }
@@ -96,7 +100,12 @@ public struct ComputerUseScreenshot: Codable, Sendable, Equatable {
 // MARK: - listApps
 
 public struct ComputerUseListAppsParams: Codable, Sendable, Equatable {
-    public init() {}
+    /// `"running" | "all"`.
+    public let mode: String
+
+    public init(mode: String) {
+        self.mode = mode
+    }
 }
 
 public struct ComputerUseListAppsResult: Codable, Sendable, Equatable {

@@ -13,6 +13,7 @@
 import {
   RPCMethod,
   RPCErrorCode,
+  type ComputerUseListAppsParams,
   type ComputerUseListAppsResult,
   type ComputerUseListWindowsParams,
   type ComputerUseListWindowsResult,
@@ -126,21 +127,34 @@ export function registerComputerUseTools(dispatcher: Dispatcher): void {
 // Builders
 // ---------------------------------------------------------------------------
 
-function buildListApps(dispatcher: Dispatcher): ToolHandler<Record<string, never>, ComputerUseListAppsResult> {
+function buildListApps(
+  dispatcher: Dispatcher,
+): ToolHandler<ComputerUseListAppsParams, ComputerUseListAppsResult> {
   return {
     spec: {
       name: "computer_use_list_apps",
       description:
         BACKGROUND_NOTE +
-        "Enumerate the operable on-screen macOS apps (NSApplicationActivationPolicyRegular). " +
-        "Use this first when you need the pid of an app you intend to operate.",
-      parameters: { type: "object", properties: {}, required: [] },
+        "Enumerate macOS apps. Use mode='running' to list apps currently running, or mode='all' to list every available app. " +
+        "Only running apps have a non-null pid and can be used with list_windows/get_app_state/click/type. " +
+        "If an app is not running, open it first before using Computer Use operations on it.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: {
+            type: "string",
+            enum: ["running", "all"],
+            description: "Use 'running' for currently running apps, or 'all' for all available apps.",
+          },
+        },
+        required: ["mode"],
+      },
     },
-    execute: async (_args, ctx) => {
+    execute: async (args, ctx) => {
       const result = await callCU<ComputerUseListAppsResult>(
         dispatcher,
         RPCMethod.computerUseListApps,
-        {},
+        args,
         ctx,
       );
       return {
@@ -166,7 +180,7 @@ function buildListWindows(
       parameters: {
         type: "object",
         properties: {
-          pid: { type: "number", description: "macOS pid (from computer_use_list_apps)." },
+          pid: { type: "number", description: "macOS pid from a running computer_use_list_apps entry." },
         },
         required: ["pid"],
       },

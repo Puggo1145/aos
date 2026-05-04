@@ -258,7 +258,7 @@ interface ConfigSelection   { providerId: string; modelId: string; }
 
 | Method | 类型 | Params | Result |
 |---|---|---|---|
-| `computerUse.listApps` | Request | `{}` | `{ apps: AppInfo[] }` |
+| `computerUse.listApps` | Request | `{ mode: "running" \| "all" }` | `{ apps: AppInfo[] }`；`running` 只返回当前运行 app，`all` 包含已安装 app；未运行 app 的 `pid` 为 `null`，需先打开再操作 |
 | `computerUse.listWindows` | Request | `{ pid }` | `{ windows: WindowInfo[] }`，每项含 `windowId` / `title` / `bounds` / `isOnScreen` / `onCurrentSpace` |
 | `computerUse.getAppState` | Request | `{ pid, windowId, captureMode? }` | `{ stateId, axTree?, screenshot? }` |
 | `computerUse.click` | Request | `{ pid, windowId, stateId, elementIndex, action? }`（语义化）<br>或 `{ pid, windowId, x, y, count?, modifiers? }`（坐标） | `{ success, method }` |

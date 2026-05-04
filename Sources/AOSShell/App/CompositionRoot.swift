@@ -133,6 +133,7 @@ public final class CompositionRoot {
         let devWindow = DevModeWindowController(
             contextService: devContext,
             sessionStore: store,
+            computerUseService: cuService,
             doctorService: cuDoctor
         )
         self.devModeWindowController = devWindow

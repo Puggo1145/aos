@@ -151,8 +151,8 @@ public actor ComputerUseService {
 
     // MARK: - Enumeration
 
-    public func listApps() -> [AppInfo] {
-        AppEnumerator.operableApps()
+    public func listApps(mode: AppListMode) -> [AppInfo] {
+        AppEnumerator.apps(mode: mode)
     }
 
     /// Layer-0 windows for `pid`, each annotated with its current
@@ -596,4 +596,3 @@ public actor ComputerUseService {
         }
     }
 }
-

@@ -188,7 +188,7 @@ Shell 的 `ComputerUseHandlers.swift` 把 Kit public API 包装为 `computerUse.
 
 | 方法 | 说明 |
 |---|---|
-| `computerUse.listApps` | 枚举可操作的 on-screen app |
+| `computerUse.listApps` | `{mode: "running" \| "all"}`；`running` 只枚举当前运行 app，`all` 枚举电脑可用 app 并标注 running / pid；未运行 app 需先打开，只有 running app 可继续 `listWindows(pid)` |
 | `computerUse.listWindows` | `{pid}` → 所有 layer-0 窗口及其 `windowId` / `bounds` / `isOnScreen` / `onCurrentSpace` |
 | `computerUse.getAppState` | `{pid, windowId, captureMode?}` → `{stateId, axTree?, screenshot?}`，stateId TTL 30s |
 | `computerUse.click` | `{pid, windowId, stateId, elementIndex, action?}`（语义化）或 `{pid, windowId, x, y, count?, modifiers?}`（坐标） |

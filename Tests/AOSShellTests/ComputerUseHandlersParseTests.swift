@@ -56,6 +56,31 @@ struct ComputerUseHandlersParseTests {
     }
 }
 
+// MARK: - ComputerUseHandlers.parseAppListMode
+
+@Suite("ComputerUseHandlers.parseAppListMode")
+struct ComputerUseHandlersAppListModeParseTests {
+    @Test("Known list app modes round-trip")
+    func knownValues() throws {
+        #expect(try ComputerUseHandlers.parseAppListMode("running") == .running)
+        #expect(try ComputerUseHandlers.parseAppListMode("all") == .all)
+        #expect(try ComputerUseHandlers.parseAppListMode("RUNNING") == .running)
+    }
+
+    @Test("Unknown list app mode throws invalidParams")
+    func unknownStringThrows() {
+        do {
+            _ = try ComputerUseHandlers.parseAppListMode("installed")
+            Issue.record("expected throw for unknown list app mode")
+        } catch let err as RPCErrorThrowable {
+            #expect(err.rpcError.code == RPCErrorCode.invalidParams)
+            #expect(err.rpcError.message.contains("installed"))
+        } catch {
+            Issue.record("expected RPCErrorThrowable, got \(error)")
+        }
+    }
+}
+
 // MARK: - ComputerUseHandlers.mapError
 //
 // Locks the wire shape against `docs/designs/rpc-protocol.md` "错误模型".

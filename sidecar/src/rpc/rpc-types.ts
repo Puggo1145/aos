@@ -830,9 +830,11 @@ export type SessionListChangedNotificationParams = Record<string, never>;
 // ---------------------------------------------------------------------------
 
 export interface ComputerUseAppInfo {
-  pid: number;
+  pid: number | null;
   bundleId: string | null;
   name: string;
+  path: string | null;
+  running: boolean;
   active: boolean;
 }
 
@@ -862,7 +864,9 @@ export interface ComputerUseScreenshot {
   originalHeight?: number | null;
 }
 
-export type ComputerUseListAppsParams = Record<string, never>;
+export interface ComputerUseListAppsParams {
+  mode: "running" | "all";
+}
 export interface ComputerUseListAppsResult {
   apps: ComputerUseAppInfo[];
 }

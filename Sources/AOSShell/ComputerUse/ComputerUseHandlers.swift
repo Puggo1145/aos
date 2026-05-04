@@ -43,8 +43,9 @@ public final class ComputerUseHandlers {
             method: RPCMethod.computerUseListApps,
             as: ComputerUseListAppsParams.self,
             resultType: ComputerUseListAppsResult.self
-        ) { [service] _ in
-            let apps = await service.listApps()
+        ) { [service] params in
+            let mode = try Self.parseAppListMode(params.mode)
+            let apps = await service.listApps(mode: mode)
             return ComputerUseListAppsResult(apps: apps.map(Self.projectAppInfo))
         }
 
@@ -238,9 +239,11 @@ public final class ComputerUseHandlers {
 
     nonisolated private static func projectAppInfo(_ info: AppInfo) -> ComputerUseAppInfo {
         ComputerUseAppInfo(
-            pid: Int32(info.pid),
+            pid: info.pid.map { Int32($0) },
             bundleId: info.bundleId,
             name: info.name,
+            path: info.path,
+            running: info.running,
             active: info.active
         )
     }
@@ -289,6 +292,18 @@ public final class ComputerUseHandlers {
             throw RPCErrorThrowable(RPCError(
                 code: RPCErrorCode.invalidParams,
                 message: "captureMode \"\(raw)\" not recognized — expected \"som\", \"vision\", or \"ax\""
+            ))
+        }
+    }
+
+    nonisolated static func parseAppListMode(_ raw: String) throws -> AppListMode {
+        switch raw.lowercased() {
+        case "running": return .running
+        case "all":     return .all
+        default:
+            throw RPCErrorThrowable(RPCError(
+                code: RPCErrorCode.invalidParams,
+                message: "mode \"\(raw)\" not recognized — expected \"running\" or \"all\""
             ))
         }
     }
